@@ -1,196 +1,111 @@
 import axios from 'axios'
-import type { Episode, Podcast, ProgressItem, QueueItem } from '../types'
+import type { EpisodeRow, Favorite, Podcast } from '../types'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api/index.php'
-
-const client = axios.create({
-  baseURL: API_BASE,
-  timeout: 20000,
-})
-
-type ApiResponse<T> = {
-  status: boolean | number
-  feeds?: T[]
-  items?: T[]
-  item?: T | null
-}
+const API_BASE = import.meta.env.VITE_API_BASE || '/podcast/api/index.php'
+const client = axios.create({ baseURL: API_BASE, timeout: 30000 })
 
 type RawRecord = Record<string, unknown>
-
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-function asNumber(value: unknown): number {
-  return typeof value === 'number' ? value : Number(value || 0)
-}
-
-function upgradeToHttps(url: string): string {
-  return url.startsWith('http://') ? 'https://' + url.slice(7) : url
-}
+const s = (v: unknown): string => (typeof v === 'string' ? v : '')
+const n = (v: unknown): number => (typeof v === 'number' ? v : Number(v || 0))
+const https = (url: string): string => (url.startsWith('http://') ? 'https://' + url.slice(7) : url)
 
 function normalizePodcast(feed: RawRecord): Podcast {
   return {
-    id: asNumber(feed.id),
-    title: asString(feed.title) || 'Ukendt podcast',
-    image: upgradeToHttps(asString(feed.image) || asString(feed.artwork)),
-    author: asString(feed.author) || asString(feed.ownerName),
-    language: asString(feed.language),
-    feedUrl: upgradeToHttps(asString(feed.url) || asString(feed.feedUrl)),
-    url: asString(feed.link),
+    id: n(feed.id),
+    title: s(feed.title) || 'Ukendt podcast',
+    image: https(s(feed.image) || s(feed.artwork)),
+    author: s(feed.author) || s(feed.ownerName),
+    language: s(feed.language),
+    feedUrl: https(s(feed.url) || s(feed.feedUrl)),
+    url: s(feed.link),
   }
 }
 
-function normalizeEpisode(raw: RawRecord): Episode {
+function normalizeEpisodeRow(r: RawRecord): EpisodeRow {
   return {
-    id: asNumber(raw.id),
-    feedId: asNumber(raw.feedId),
-    feedTitle: asString(raw.feedTitle),
-    title: asString(raw.title) || 'Ukendt episode',
-    description: asString(raw.description),
-    datePublished: asNumber(raw.datePublished),
-    datePublishedPretty: asString(raw.datePublishedPretty),
-    enclosureUrl: upgradeToHttps(asString(raw.enclosureUrl) || asString(raw.url)),
-    image: upgradeToHttps(asString(raw.image)),
-    duration: asNumber(raw.duration),
+    feedId: n(r.feed_id),
+    episodeId: n(r.episode_id),
+    title: s(r.title) || 'Ukendt episode',
+    description: s(r.description),
+    publishedAt: n(r.published_at),
+    audioUrl: r.audio_url ? https(s(r.audio_url)) : undefined,
+    linkUrl: r.link_url ? https(s(r.link_url)) : undefined,
+    image: https(s(r.image)),
+    durationSec: n(r.duration_sec),
+    podcastTitle: s(r.podcast_title),
+    podcastImage: https(s(r.podcast_image)),
+    playedAt: (r.played_at as string | null) ?? null,
+    positionSec: n(r.position_sec),
   }
 }
 
+// --- Discovery ---
 export async function discover(lang = 'da', max = 80): Promise<Podcast[]> {
-  const { data } = await client.get<ApiResponse<RawRecord>>('', {
-    params: { action: 'discover', lang, max },
-  })
-
+  const { data } = await client.get('', { params: { action: 'discover', lang, max } })
   return (data.feeds || []).map(normalizePodcast)
 }
 
 export async function search(q: string, max = 80): Promise<Podcast[]> {
-  const { data } = await client.get<ApiResponse<RawRecord>>('', {
-    params: { action: 'search', q, max },
-  })
-
+  const { data } = await client.get('', { params: { action: 'search', q, max } })
   return (data.feeds || []).map(normalizePodcast)
 }
 
-export async function episodesByFeed(feedId: number, max = 80): Promise<Episode[]> {
-  const { data } = await client.get<ApiResponse<RawRecord>>('', {
-    params: { action: 'episodes', id: feedId, max },
-  })
-
-  return (data.items || []).map(normalizeEpisode)
+export async function resolveUrl(url: string): Promise<Podcast | null> {
+  const { data } = await client.get('', { params: { action: 'resolveUrl', url } })
+  if (data.feed) return normalizePodcast(data.feed)
+  return null
 }
 
-export async function listSubscriptions(deviceId: string): Promise<Podcast[]> {
-  const { data } = await client.get<ApiResponse<RawRecord>>('', {
-    params: { action: 'subscriptions.list', deviceId },
-  })
-
-  return (data.items || []).map((item) => ({
-    id: asNumber(item.feed_id),
-    title: asString(item.title),
-    image: upgradeToHttps(asString(item.image)),
-    author: asString(item.author),
-    language: asString(item.language),
-    feedUrl: upgradeToHttps(asString(item.feed_url)),
+// --- Favorites ---
+export async function listFavorites(deviceId: string): Promise<Favorite[]> {
+  const { data } = await client.get('', { params: { action: 'favorites.list', deviceId } })
+  return (data.items || []).map((it: RawRecord) => ({
+    feedId: n(it.feed_id),
+    title: s(it.title),
+    image: https(s(it.image)),
+    author: s(it.author),
+    language: s(it.language),
+    feedUrl: https(s(it.feed_url)),
+    addedVia: s(it.added_via),
   }))
 }
 
-export async function addSubscription(deviceId: string, podcast: Podcast): Promise<void> {
-  await client.post('', {
-    deviceId,
-    feedId: podcast.id,
-    title: podcast.title,
-    image: podcast.image || '',
-    feedUrl: podcast.feedUrl || '',
-    author: podcast.author || '',
-    language: podcast.language || '',
-  }, { params: { action: 'subscriptions.add' } })
-}
-
-export async function removeSubscription(deviceId: string, feedId: number): Promise<void> {
-  await client.delete('', {
-    params: { action: 'subscriptions.remove' },
-    data: { deviceId, feedId },
-  })
-}
-
-export async function listQueue(deviceId: string): Promise<QueueItem[]> {
-  const { data } = await client.get<ApiResponse<RawRecord>>('', {
-    params: { action: 'queue.list', deviceId },
-  })
-
-  return (data.items || []).map((item) => ({
-    id: asNumber(item.id),
-    episode_id: asNumber(item.episode_id),
-    feed_id: asNumber(item.feed_id),
-    title: asString(item.title),
-    podcast_title: asString(item.podcast_title),
-    audio_url: upgradeToHttps(asString(item.audio_url)),
-    image: upgradeToHttps(asString(item.image)),
-    published_at: asString(item.published_at),
-    duration_sec: asNumber(item.duration_sec),
-    sort_order: asNumber(item.sort_order),
-  }))
-}
-
-export async function addQueueItem(deviceId: string, item: QueueItem): Promise<void> {
-  await client.post('', {
-    deviceId,
-    episodeId: item.episode_id,
-    feedId: item.feed_id,
-    title: item.title,
-    podcastTitle: item.podcast_title || '',
-    audioUrl: item.audio_url,
-    image: item.image || '',
-    publishedAt: item.published_at || '',
-    durationSec: item.duration_sec || 0,
-  }, { params: { action: 'queue.add' } })
-}
-
-export async function removeQueueItem(deviceId: string, episodeId: number): Promise<void> {
-  await client.delete('', {
-    params: { action: 'queue.remove' },
-    data: { deviceId, episodeId },
-  })
-}
-
-export async function getProgress(deviceId: string): Promise<ProgressItem | null> {
-  const { data } = await client.get<ApiResponse<RawRecord>>('', {
-    params: { action: 'progress.get', deviceId },
-  })
-
-  const item = data.item
-  if (!item) {
-    return null
-  }
-
-  return {
-    episode_id: asNumber(item.episode_id),
-    feed_id: asNumber(item.feed_id),
-    title: asString(item.title),
-    audio_url: upgradeToHttps(asString(item.audio_url)),
-    position_sec: asNumber(item.position_sec),
-    duration_sec: asNumber(item.duration_sec),
-  }
-}
-
-export async function setProgress(
-  deviceId: string,
-  payload: {
-    episodeId: number
-    feedId: number
-    title: string
-    audioUrl: string
-    positionSec: number
-    durationSec: number
-  },
-): Promise<void> {
+export async function addFavorite(deviceId: string, p: Podcast, addedVia = 'search'): Promise<void> {
   await client.post(
     '',
     {
       deviceId,
-      ...payload,
+      feedId: p.id,
+      title: p.title,
+      image: p.image || '',
+      author: p.author || '',
+      language: p.language || '',
+      feedUrl: p.feedUrl || '',
+      addedVia,
     },
-    { params: { action: 'progress.set' } },
+    { params: { action: 'favorites.add' } },
   )
+}
+
+export async function removeFavorite(deviceId: string, feedId: number): Promise<void> {
+  await client.delete('', { params: { action: 'favorites.remove' }, data: { deviceId, feedId } })
+}
+
+// --- Episodes ---
+export async function newestEpisodes(deviceId: string): Promise<EpisodeRow[]> {
+  const { data } = await client.get('', { params: { action: 'episodes.newest', deviceId } })
+  return (data.items || []).map(normalizeEpisodeRow)
+}
+
+export async function feedEpisodes(deviceId: string, feedId: number): Promise<EpisodeRow[]> {
+  const { data } = await client.get('', { params: { action: 'episodes.feed', deviceId, id: feedId } })
+  return (data.items || []).map(normalizeEpisodeRow)
+}
+
+// --- Played / position state ---
+export async function setState(
+  deviceId: string,
+  payload: { episodeId: number; feedId: number; played?: boolean; positionSec?: number; durationSec?: number },
+): Promise<void> {
+  await client.post('', { deviceId, ...payload }, { params: { action: 'state.set' } })
 }

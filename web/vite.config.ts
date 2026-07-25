@@ -1,15 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
+// Deployed under aogj.com/podcast/ (one.com subfolder), so assets must resolve against /podcast/.
 export default defineConfig({
+  base: '/podcast/',
   plugins: [react()],
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
-      },
-    },
-  },
 })

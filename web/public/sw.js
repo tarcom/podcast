@@ -1,11 +1,14 @@
-const CACHE_NAME = 'nordpod-v1'
-const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg']
+// App lives under /podcast/ on aogj.com — all shell paths are scoped there.
+const CACHE_NAME = 'nordpod-v2'
+const BASE = '/podcast/'
+const APP_SHELL = [BASE, BASE + 'index.html', BASE + 'manifest.webmanifest', BASE + 'icon.svg']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
+      // tolerate any single asset 404ing so install never aborts
+      .then((cache) => Promise.allSettled(APP_SHELL.map((u) => cache.add(u))))
       .then(() => self.skipWaiting()),
   )
 })
@@ -14,43 +17,31 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
-      )
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   )
 })
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
-
   const url = new URL(event.request.url)
 
-  // Let cross-origin requests (podcast images, audio CDN) go directly to network
+  // Cross-origin (podcast images, audio CDN) → straight to network.
   if (url.origin !== self.location.origin) return
-
-  // Let API calls always go to network for fresh data
-  if (url.pathname.includes('index.php') || url.pathname.startsWith('/api/')) return
-
-  // Let Vite dev server internal paths pass through
-  if (url.pathname.startsWith('/@')) return
+  // API is always live.
+  if (url.pathname.includes('index.php') || url.pathname.includes('/api/')) return
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached
-
-      return fetch(event.request).then((response) => {
-        if (response.ok) {
-          const cloned = response.clone()
-          caches
-            .open(CACHE_NAME)
-            .then((cache) => cache.put(event.request, cloned))
-            .catch(() => {
-              // Ignore cache storage failures (e.g. quota exceeded)
-            })
-        }
-        return response
-      })
-    }),
+    caches.match(event.request).then(
+      (cached) =>
+        cached ||
+        fetch(event.request).then((response) => {
+          if (response.ok) {
+            const cloned = response.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, cloned)).catch(() => {})
+          }
+          return response
+        }),
+    ),
   )
 })

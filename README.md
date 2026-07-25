@@ -1,109 +1,63 @@
 # NordPod
 
-Reklame-light podcast app med dansk-furst prioritet, bygget til one.com med PHP + MySQL backend og React + Vite frontend.
+Reklame-light podcast-app med dansk-først prioritet. Kun én bruger (dig) — ingen login endnu,
+men `device_id` bæres gennem hele modellen, så rigtige brugere kan tilføjes senere uden
+skemaændring.
+
+Live: **https://aogj.com/podcast/** (one.com, PHP + delt MySQL). React + Vite frontend, PHP-proxy
+mod Podcast Index.
+
+## Kernefunktioner
+
+- **Kun favoritter** (stjernemarkér en podcast). Ikke det gamle favorit/abonnement-skel.
+- **Kø-fane** = de nyeste *uhørte* afsnit på tværs af alle favoritter, nyeste først. Afspilleren
+  kører videre til næste uhørte når et afsnit er færdigt.
+- **Hørt-tilstand**: hørte afsnit bliver grå. Sættes automatisk når et afsnit spilles færdigt, og
+  kan sættes/fjernes manuelt (nødvendigt for link-ud-afsnit vi ikke selv afspiller).
+- **Sprogfilter** på søgeresultater (Dansk først / Kun dansk / Alle) + dansk-først discover.
+- **Tilføj via RSS-URL** — escape hatch til feeds Podcast Index ikke finder via søgning.
+- **DR / Podimo m.fl.:** offentlige feeds afspilles/vises normalt. Afsnit uden afspillelig lydfil
+  (paywall/app-only) får et "åbn hos udbyder"-link i stedet for en afspil-knap.
 
 ## Arkitektur
 
-- Frontend: React + TypeScript + Vite + PWA (manifest + service worker)
-- Backend: PHP API proxy mod Podcast Index
-- Data: MySQL til favoritter, abonnementer, afspilningsko og afspilningsposition
-- Login: ikke aktiveret endnu (enhedsbaseret id i browseren)
+- **Frontend:** React + TypeScript + Vite + PWA. Bygges under `base=/podcast/`.
+- **Backend:** tynde PHP-endpoints (`api/index.php?action=…`) der proxyer Podcast Index og læser/
+  skriver MySQL. Ingen framework.
+- **Data (delt `aogj_com`-DB, tabeller præfikset `podcast_`):**
+  - `podcast_favorites` — hvilke feeds du følger (+ `last_fetched` der styrer refresh)
+  - `podcast_episodes` — cache af afsnit pr. feed (globalt; muliggør "hvad er nyt" + sortering)
+  - `podcast_episode_state` — pr-device hørt/afspilningsposition (grå-markering + genoptag)
+- **Ingen cron nødvendig.** "Opdatér ved åbning": når du henter køen, refresher backenden de
+  favoritter hvis afsnit er ældre end 30 min (kappet til 8 pr. kald). Da det kun er dig med få
+  favoritter er det billigt. (one.com har planlagte opgaver hvis vi senere vil holde cachen varm.)
 
-## Struktur
+## API-endpoints (`api/index.php?action=…`)
 
-- web/: frontend app
-- api/: PHP API
-- database/schema.sql: MySQL tabeller
+`health` · `migrate` (opret tabeller, idempotent) · `discover` · `search` · `podcast` ·
+`resolveUrl` (RSS-URL → feed) · `favorites.list/add/remove` · `episodes.feed` (ét show) ·
+`episodes.newest` (kø: nyeste uhørte på tværs af favoritter) · `state.set` (hørt + position).
 
-## 1) Lokal udvikling
+## Udvikling
 
-### Frontend
+```bash
+# Frontend (kræver Node 20+ — brug nvm; system-node på HTPC er 18)
+cd web && npm install && npm run dev
+# Backend lokalt
+cp api/config.example.php api/config.php   # udfyld Podcast Index-nøgler + MySQL
+php -S localhost:8000 -t .
+```
 
-1. Gå til web mappen:
+## Deploy (one.com, kun FTP)
 
-	cd web
+`./deploy.sh api` uploader `api/*.php` (inkl. `config.php` — den skal med, den er gitignored og
+ligger kun på serveren). `./deploy.sh web` bygger og uploader `web/dist/`. Creds i
+`.ftp-credentials` (gitignored, delt med de andre aogj.com-projekter). Kør
+`…/api/index.php?action=migrate` én gang efter første deploy for at oprette tabellerne.
 
-2. Installer pakker:
+## Ikke bygget endnu
 
-	npm install
-
-3. Kopier env-fil:
-
-	cp .env.example .env
-
-4. Start udviklingsserver:
-
-	npm run dev
-
-### Backend
-
-1. Kopier konfigurationsfil:
-
-	cp api/config.example.php api/config.php
-
-2. Udfyld api/config.php med:
-
-	- Podcast Index api_key
-	- Podcast Index api_secret
-	- MySQL host, database, bruger, kodeord
-
-3. Opret tabeller i MySQL ved at køre database/schema.sql i one.com phpMyAdmin.
-
-## 2) API endpoints
-
-Alle routes rammes via api/index.php?action=<action>
-
-- health
-- discover
-- search
-- podcast
-- episodes
-- favorites.list
-- favorites.add
-- favorites.remove
-- subscriptions.list
-- subscriptions.add
-- subscriptions.remove
-- queue.list
-- queue.add
-- queue.remove
-- progress.get
-- progress.set
-
-## 3) One.com deployment
-
-Da one.com her er PHP + MySQL + FTP uden SSH:
-
-1. Build frontend lokalt:
-
-	cd web
-	npm run build
-
-2. Upload indholdet af web/dist til webroden på one.com via FTP.
-
-3. Upload api mappen til samme webrod, fx /api/index.php.
-
-4. Læg api/config.php op med rigtige nøgler og database credentials.
-
-5. Kør database/schema.sql i one.com phpMyAdmin.
-
-6. Verificer at frontend kalder korrekt API-sti:
-
-	VITE_API_BASE=/api/index.php
-
-## 4) Seed af dansk indhold
-
-Appen henter automatisk trending podcasts med lang=da i discover flow. Det giver dansk-furst forside fra dag 1.
-
-## 5) Sikkerhed
-
-- API nøgler maa aldrig ligge i frontend.
-- Roter nøgler hvis de har vaeret delt offentligt.
-- Beskyt api/config.php via serverregler hvis muligt pa one.com.
-
-## 6) Næste trin
-
-- Brugerlogin (email eller social)
-- Multi-device synk
-- Notifikationer for nye episoder
-- Android packaging via TWA eller React Native senere
+- Rigtig brugerhåndtering (login → stabil `device_id`/`user_id`)
+- Podimo-eksklusivt indhold (kræver den grå selvhostede converter — bevidst fravalgt; kun
+  offentlige Podimo-shows dækkes automatisk via Podcast Index)
+- Notifikationer for nye afsnit

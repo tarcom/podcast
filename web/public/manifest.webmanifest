@@ -1,15 +1,16 @@
 {
   "name": "NordPod",
   "short_name": "NordPod",
-  "description": "Minimalistisk podcast app med dansk-forst indhold.",
-  "start_url": "/",
+  "description": "Minimalistisk podcast app med dansk-først indhold.",
+  "start_url": "/podcast/",
+  "scope": "/podcast/",
   "display": "standalone",
   "background_color": "#f5f2e8",
   "theme_color": "#1f4d3e",
   "lang": "da",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/podcast/icon.svg",
       "sizes": "512x512",
       "type": "image/svg+xml",
       "purpose": "any maskable"

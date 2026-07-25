@@ -8,37 +8,29 @@ export type Podcast = {
   url?: string
 }
 
-export type Episode = {
-  id: number
+// A cached episode joined with this device's played/position state.
+export type EpisodeRow = {
   feedId: number
-  feedTitle?: string
+  episodeId: number
   title: string
   description?: string
-  datePublished?: number
-  datePublishedPretty?: string
-  enclosureUrl?: string
+  publishedAt: number // unix seconds
+  audioUrl?: string // empty/undefined => not playable in-app (link out)
+  linkUrl?: string // provider page for link-out (DR / Podimo etc.)
   image?: string
-  duration?: number
+  durationSec: number
+  podcastTitle?: string
+  podcastImage?: string
+  playedAt?: string | null // non-null => heard (greyed)
+  positionSec: number
 }
 
-export type QueueItem = {
-  id?: number
-  episode_id: number
-  feed_id: number
+export type Favorite = {
+  feedId: number
   title: string
-  podcast_title?: string
-  audio_url: string
   image?: string
-  published_at?: string
-  duration_sec?: number
-  sort_order?: number
-}
-
-export type ProgressItem = {
-  episode_id: number
-  feed_id: number
-  title: string
-  audio_url: string
-  position_sec: number
-  duration_sec: number
+  author?: string
+  language?: string
+  feedUrl?: string
+  addedVia?: string
 }
