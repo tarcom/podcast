@@ -1,7 +1,10 @@
 // App lives under /podcast/ on aogj.com — all shell paths are scoped there.
-const CACHE_NAME = 'nordpod-v2'
+const CACHE_NAME = 'nordpod-v3'
 const BASE = '/podcast/'
-const APP_SHELL = [BASE, BASE + 'index.html', BASE + 'manifest.webmanifest', BASE + 'icon.svg']
+const APP_SHELL = [
+  BASE, BASE + 'index.html', BASE + 'manifest.webmanifest',
+  BASE + 'icon.svg', BASE + 'icon-192.png', BASE + 'icon-512.png',
+]
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

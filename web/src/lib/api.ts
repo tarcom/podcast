@@ -10,6 +10,9 @@ const n = (v: unknown): number => (typeof v === 'number' ? v : Number(v || 0))
 const https = (url: string): string => (url.startsWith('http://') ? 'https://' + url.slice(7) : url)
 
 function normalizePodcast(feed: RawRecord): Podcast {
+  const cats = feed.categories && typeof feed.categories === 'object'
+    ? Object.values(feed.categories as Record<string, string>).map(String)
+    : undefined
   return {
     id: n(feed.id),
     title: s(feed.title) || 'Ukendt podcast',
@@ -18,6 +21,8 @@ function normalizePodcast(feed: RawRecord): Podcast {
     language: s(feed.language),
     feedUrl: https(s(feed.url) || s(feed.feedUrl)),
     url: s(feed.link),
+    description: s(feed.description),
+    categories: cats,
   }
 }
 
@@ -52,6 +57,12 @@ export async function search(q: string, max = 80): Promise<Podcast[]> {
 
 export async function resolveUrl(url: string): Promise<Podcast | null> {
   const { data } = await client.get('', { params: { action: 'resolveUrl', url } })
+  if (data.feed) return normalizePodcast(data.feed)
+  return null
+}
+
+export async function getPodcast(feedId: number): Promise<Podcast | null> {
+  const { data } = await client.get('', { params: { action: 'podcast', id: feedId } })
   if (data.feed) return normalizePodcast(data.feed)
   return null
 }
@@ -108,4 +119,14 @@ export async function setState(
   payload: { episodeId: number; feedId: number; played?: boolean; positionSec?: number; durationSec?: number },
 ): Promise<void> {
   await client.post('', { deviceId, ...payload }, { params: { action: 'state.set' } })
+}
+
+// Bulk: markér mange afsnit hørt/uhørt på én gang (til "ryd alt herunder").
+export async function setStateMany(
+  deviceId: string,
+  episodes: { episodeId: number; feedId: number }[],
+  played: boolean,
+): Promise<void> {
+  if (!episodes.length) return
+  await client.post('', { deviceId, episodes, played }, { params: { action: 'state.setMany' } })
 }

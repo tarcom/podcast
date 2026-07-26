@@ -6,6 +6,8 @@ export type Podcast = {
   language?: string
   feedUrl?: string
   url?: string
+  description?: string
+  categories?: string[]
 }
 
 // A cached episode joined with this device's played/position state.

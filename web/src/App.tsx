@@ -3,12 +3,14 @@ import {
   addFavorite,
   discover,
   feedEpisodes,
+  getPodcast,
   listFavorites,
   newestEpisodes,
   removeFavorite,
   resolveUrl,
   search,
   setState as saveState,
+  setStateMany,
 } from './lib/api'
 import { getDeviceId } from './lib/device'
 import type { EpisodeRow, Favorite, Podcast } from './types'
@@ -27,6 +29,42 @@ function fmtDur(sec: number): string {
   const h = Math.floor(sec / 3600)
   const m = Math.round((sec % 3600) / 60)
   return h > 0 ? `${h} t ${m} min` : `${m} min`
+}
+function fmtTime(unix: number): string {
+  if (!unix) return ''
+  return new Date(unix * 1000).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })
+}
+
+// midnat-baseret "dagsnøgle" så vi kan gruppere afsnit pr. dag
+const WEEKDAYS = ['Søndag', 'Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag', 'Lørdag']
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+function dayLabel(unix: number): string {
+  if (!unix) return 'Uden dato'
+  const d = new Date(unix * 1000)
+  const today = startOfDay(new Date())
+  const day = startOfDay(d)
+  const diffDays = Math.round((today - day) / 86400000)
+  if (diffDays <= 0) return 'I dag'
+  if (diffDays === 1) return 'I går'
+  if (diffDays < 7) return WEEKDAYS[d.getDay()]
+  return d.toLocaleDateString('da-DK', { day: '2-digit', month: 'long', year: 'numeric' })
+}
+
+type DayGroup = { key: number; label: string; episodes: EpisodeRow[] }
+function groupByDay(eps: EpisodeRow[]): DayGroup[] {
+  const groups: DayGroup[] = []
+  let cur: DayGroup | null = null
+  for (const ep of eps) {
+    const key = ep.publishedAt ? startOfDay(new Date(ep.publishedAt * 1000)) : 0
+    if (!cur || cur.key !== key) {
+      cur = { key, label: dayLabel(ep.publishedAt), episodes: [] }
+      groups.push(cur)
+    }
+    cur.episodes.push(ep)
+  }
+  return groups
 }
 
 export default function App() {
@@ -49,8 +87,12 @@ export default function App() {
 
   // podcast detail (episodes of one podcast)
   const [openPodcast, setOpenPodcast] = useState<Podcast | Favorite | null>(null)
+  const [openPodcastInfo, setOpenPodcastInfo] = useState<Podcast | null>(null) // fuld info (beskrivelse)
   const [detailEpisodes, setDetailEpisodes] = useState<EpisodeRow[]>([])
   const [detailBusy, setDetailBusy] = useState(false)
+
+  // episode detail ("læs mere")
+  const [openEpisode, setOpenEpisode] = useState<EpisodeRow | null>(null)
 
   // player
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -143,7 +185,10 @@ export default function App() {
     async (p: Podcast | Favorite) => {
       const feedId = 'id' in p ? p.id : p.feedId
       setOpenPodcast(p)
+      setOpenPodcastInfo(('description' in p && p.description) ? (p as Podcast) : null)
       setDetailBusy(true)
+      // fuld podcast-info (beskrivelse) i baggrunden
+      getPodcast(feedId).then((full) => { if (full) setOpenPodcastInfo(full) }).catch(() => {})
       try {
         setDetailEpisodes(await feedEpisodes(deviceId, feedId))
       } finally {
@@ -178,6 +223,18 @@ export default function App() {
       setDetailEpisodes(patch)
     },
     [deviceId],
+  )
+
+  // "ryd alt herunder": markér dette afsnit + alle ældre (i køen) som hørt
+  const clearBelow = useCallback(
+    async (fromPublishedAt: number) => {
+      const targets = queue.filter((e) => !e.playedAt && e.publishedAt <= fromPublishedAt)
+      if (!targets.length) return
+      const ids = new Set(targets.map((e) => e.episodeId))
+      setQueue((list) => list.map((e) => (ids.has(e.episodeId) ? { ...e, playedAt: new Date().toISOString() } : e)))
+      await setStateMany(deviceId, targets.map((e) => ({ episodeId: e.episodeId, feedId: e.feedId })), true).catch(() => {})
+    },
+    [queue, deviceId],
   )
 
   const onEnded = useCallback(async () => {
@@ -218,6 +275,31 @@ export default function App() {
       setPlaying(false)
     }
   }, [])
+
+  // Media Session: metadata + betjening på låseskærm/notifikation (baggrund)
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const ms = navigator.mediaSession
+    if (current) {
+      const art = current.image || current.podcastImage
+      ms.metadata = new MediaMetadata({
+        title: current.title,
+        artist: current.podcastTitle || 'NordPod',
+        album: 'NordPod',
+        artwork: art ? [96, 192, 512].map((sz) => ({ src: art, sizes: `${sz}x${sz}`, type: 'image/jpeg' })) : [],
+      })
+    }
+    ms.setActionHandler('play', () => audioRef.current?.play().then(() => setPlaying(true)).catch(() => {}))
+    ms.setActionHandler('pause', () => { audioRef.current?.pause(); setPlaying(false) })
+    ms.setActionHandler('seekbackward', () => { if (audioRef.current) audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 15) })
+    ms.setActionHandler('seekforward', () => { if (audioRef.current) audioRef.current.currentTime += 30 })
+    ms.setActionHandler('nexttrack', () => onEnded())
+    return () => {
+      for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'nexttrack'] as const) {
+        try { ms.setActionHandler(a, null) } catch { /* ignore */ }
+      }
+    }
+  }, [current, onEnded])
 
   const unheardCount = queue.filter((e) => !e.playedAt).length
 
@@ -318,17 +400,33 @@ export default function App() {
             </button>
           </div>
           {favorites.length === 0 && <p className="muted">Følg nogle podcasts, så samler vi de nyeste afsnit her.</p>}
-          <ul className="episodes">
-            {queue.map((ep) => (
-              <EpisodeItem
-                key={ep.episodeId}
-                ep={ep}
-                isCurrent={current?.episodeId === ep.episodeId}
-                onPlay={() => playEpisode(ep)}
-                onToggleHeard={() => markHeard(ep, !ep.playedAt)}
-              />
-            ))}
-          </ul>
+          {favorites.length > 0 && unheardCount === 0 && <p className="muted">Alt er hørt 🎉</p>}
+          {groupByDay(queue.filter((e) => !e.playedAt)).map((g) => (
+            <div className="daygroup" key={g.key}>
+              <div className="day-head">
+                <h3>{g.label}</h3>
+                <button
+                  className="clear-below"
+                  onClick={() => { if (confirm(`Markér "${g.label}" og alt ældre som hørt?`)) clearBelow(g.episodes[g.episodes.length - 1].publishedAt) }}
+                  title="Markér denne dag og alt ældre som hørt"
+                >
+                  ✓ ryd herunder
+                </button>
+              </div>
+              <ul className="episodes">
+                {g.episodes.map((ep) => (
+                  <EpisodeItem
+                    key={ep.episodeId}
+                    ep={ep}
+                    isCurrent={current?.episodeId === ep.episodeId}
+                    onPlay={() => playEpisode(ep)}
+                    onToggleHeard={() => markHeard(ep, !ep.playedAt)}
+                    onInfo={() => setOpenEpisode(ep)}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))}
         </section>
       )}
 
@@ -338,7 +436,25 @@ export default function App() {
             <button className="modal-close" onClick={() => setOpenPodcast(null)}>
               ✕
             </button>
-            <h2>{'title' in openPodcast ? openPodcast.title : ''}</h2>
+            <div className="show-head">
+              {(openPodcastInfo?.image || ('image' in openPodcast && openPodcast.image)) && (
+                <img className="show-cover" src={openPodcastInfo?.image || ('image' in openPodcast ? openPodcast.image : '')} alt="" />
+              )}
+              <div>
+                <h2>{'title' in openPodcast ? openPodcast.title : ''}</h2>
+                {openPodcastInfo?.author && <p className="show-author">{openPodcastInfo.author}</p>}
+                {openPodcastInfo?.categories && openPodcastInfo.categories.length > 0 && (
+                  <p className="show-cats">{openPodcastInfo.categories.slice(0, 4).join(' · ')}</p>
+                )}
+              </div>
+            </div>
+            {openPodcastInfo?.description && (
+              <div className="show-desc" dangerouslySetInnerHTML={{ __html: openPodcastInfo.description }} />
+            )}
+            {openPodcastInfo?.url && (
+              <a className="show-link" href={openPodcastInfo.url} target="_blank" rel="noopener">Podcastens hjemmeside ↗</a>
+            )}
+            <h3 className="section-label">Afsnit</h3>
             {detailBusy ? (
               <p className="muted">Henter afsnit…</p>
             ) : (
@@ -350,10 +466,45 @@ export default function App() {
                     isCurrent={current?.episodeId === ep.episodeId}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
+                    onInfo={() => setOpenEpisode(ep)}
                   />
                 ))}
               </ul>
             )}
+          </div>
+        </div>
+      )}
+
+      {openEpisode && (
+        <div className="modal" onClick={() => setOpenEpisode(null)}>
+          <div className="modal-body" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setOpenEpisode(null)}>✕</button>
+            <div className="show-head">
+              {(openEpisode.image || openEpisode.podcastImage) && (
+                <img className="show-cover" src={openEpisode.image || openEpisode.podcastImage} alt="" />
+              )}
+              <div>
+                <h2>{openEpisode.title}</h2>
+                <p className="show-author">
+                  {openEpisode.podcastTitle ? openEpisode.podcastTitle + ' · ' : ''}
+                  {fmtDate(openEpisode.publishedAt)}{openEpisode.publishedAt ? ' kl. ' + fmtTime(openEpisode.publishedAt) : ''}
+                  {openEpisode.durationSec ? ' · ' + fmtDur(openEpisode.durationSec) : ''}
+                </p>
+              </div>
+            </div>
+            <div className="ep-actions">
+              {openEpisode.audioUrl ? (
+                <button className="primary" onClick={() => { playEpisode(openEpisode); setOpenEpisode(null) }}>▶ Afspil</button>
+              ) : openEpisode.linkUrl ? (
+                <a className="primary" href={openEpisode.linkUrl} target="_blank" rel="noopener">↗ Åbn hos udbyder</a>
+              ) : null}
+              <button className="ghost" onClick={() => { markHeard(openEpisode, !openEpisode.playedAt); setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() }) }}>
+                {openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér hørt'}
+              </button>
+            </div>
+            {openEpisode.description
+              ? <div className="show-desc" dangerouslySetInnerHTML={{ __html: openEpisode.description }} />
+              : <p className="muted">Ingen beskrivelse.</p>}
           </div>
         </div>
       )}
@@ -421,27 +572,29 @@ function EpisodeItem({
   isCurrent,
   onPlay,
   onToggleHeard,
+  onInfo,
 }: {
   ep: EpisodeRow
   isCurrent: boolean
   onPlay: () => void
   onToggleHeard: () => void
+  onInfo: () => void
 }) {
   const heard = !!ep.playedAt
+  const art = ep.image || ep.podcastImage
+  const playable = !!ep.audioUrl
+  const activate = () => { if (playable) onPlay(); else if (ep.linkUrl) window.open(ep.linkUrl, '_blank', 'noopener') }
   return (
     <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''}`}>
-      {ep.audioUrl ? (
-        <button className="ep-play" onClick={onPlay} title="Afspil">
-          ▶
-        </button>
-      ) : ep.linkUrl ? (
-        <a className="ep-play link" href={ep.linkUrl} target="_blank" rel="noopener" title="Åbn hos udbyder">
-          ↗
-        </a>
-      ) : (
-        <span className="ep-play disabled">–</span>
-      )}
-      <div className="ep-text">
+      <button
+        className={`ep-thumb ${playable ? '' : (ep.linkUrl ? 'link' : 'disabled')}`}
+        onClick={activate}
+        title={playable ? 'Afspil' : ep.linkUrl ? 'Åbn hos udbyder' : 'Ingen lydfil'}
+      >
+        {art ? <img src={art} alt="" loading="lazy" /> : <span className="ep-noimg" />}
+        <span className="ep-badge">{playable ? '▶' : ep.linkUrl ? '↗' : '–'}</span>
+      </button>
+      <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
         <span>
           {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
@@ -449,7 +602,7 @@ function EpisodeItem({
           {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
           {!ep.audioUrl && ' · kun hos udbyder'}
         </span>
-      </div>
+      </button>
       <button className={`heard-toggle ${heard ? 'on' : ''}`} onClick={onToggleHeard} title={heard ? 'Markér som uhørt' : 'Markér som hørt'}>
         ✓
       </button>

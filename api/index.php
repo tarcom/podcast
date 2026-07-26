@@ -184,6 +184,31 @@ try {
             ]);
             json_response(['status' => true]);
 
+        // Bulk hørt/uhørt (til "ryd alt herunder" i køen).
+        case 'state.setMany':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            $deviceId = required_string($body, 'deviceId');
+            $episodes = is_array($body['episodes'] ?? null) ? $body['episodes'] : [];
+            $played = !empty($body['played']);
+            $playedVal = $played ? 'NOW()' : 'NULL';
+            $pdo = db($config);
+            $stmt = $pdo->prepare(
+                "INSERT INTO podcast_episode_state (device_id, episode_id, feed_id, position_sec, duration_sec, played_at)
+                 VALUES (:dev, :ep, :feed, 0, 0, $playedVal)
+                 ON DUPLICATE KEY UPDATE played_at = $playedVal"
+            );
+            $count = 0;
+            foreach ($episodes as $e) {
+                if (!is_array($e) || !isset($e['episodeId'], $e['feedId'])) {
+                    continue;
+                }
+                $stmt->execute(['dev' => $deviceId, 'ep' => (int) $e['episodeId'], 'feed' => (int) $e['feedId']]);
+                $count++;
+            }
+            json_response(['status' => true, 'updated' => $count]);
+
         default:
             json_response(['status' => false, 'error' => 'Unknown action'], 404);
     }
