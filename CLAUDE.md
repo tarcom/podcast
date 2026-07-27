@@ -20,7 +20,14 @@ er lette at snuble over.
 - **Ingen cron.** Refresh sker "ved åbning" (backenden henter forældede favoritters afsnit inline
   når køen loades). Bevidst — one.com/simply-cron er ikke en forudsætning.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
-  path-rewrites IKKE af Vite). Cache hedder `nordpod-v2`; bump ved shell-ændringer.
+  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v4`**).
+- **Installerbarhed (fixet 2026-07-27):** `web/index.html` manglede `<link rel="manifest">` (Vite
+  injicerer det IKKE selv — intet PWA-plugin), så Chrome tilbød kun "Opret genvej", ikke "Installér".
+  Nu tilføjet (+ `theme-color` + `apple-touch-icon`) som **root-relative** stier (`/manifest.webmanifest`)
+  så Vite prefixer `/podcast/`. **Cache-fælde:** SW cachede den gamle index.html cache-first → en
+  ren shell-ændring slår ikke igennem uden cache-bump; derfor er HTML + manifest nu **netværk-først**
+  i sw.js (øvrige hashede assets cache-first). one.com serverer `.webmanifest` uden Content-Type —
+  Chrome installerer alligevel (MIME blokerer ikke, kun DevTools-warning).
 - **Podimo/DR:** kun offentlige feeds (dem Podcast Index kender). Eksklusivt Podimo-indhold er
   bevidst fravalgt (kræver grå selvhostet converter). Afsnit uden lydfil → "åbn hos udbyder"-link.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
