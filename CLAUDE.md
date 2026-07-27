@@ -78,6 +78,17 @@ eksklusive). Løsning = **link-out** (besked om nye afsnit + "↗ åbn hos Podim
 - Seedet+verificeret: Her Går Det Godt + Casper ringer til Frank (15 afsnit hver, link-out i køen).
   **Note:** Podimo-afsnit uden `audio_url` kan ikke afspilles/auto-videre — kun link-out.
 
+## Link-out UX + kilde-mærkater (2026-07-27)
+- **Kilde-mærkat** pr. afsnit (App.tsx `sourceOf`): udledt af lyd-/link-domænet (Podimo/DR/Acast/
+  Omny/Megaphone/…). Vist som farvet chip (`.src`, Podimo lilla, DR blå).
+- **VIGTIG Android-faldgrube:** i en **installeret PWA (standalone) på Android blokeres
+  `window.open(url,'_blank')`** — derfor "skete der ikke noget" når man trykkede afspil på et
+  Podimo/DR-afsnit uden in-app-lyd. Fix: tryk på et ikke-afspilleligt afsnit åbner nu en **pop-up
+  (afsnit-modalen)** med en **ægte `<a href target=_blank>`-knap** ("↗ Åbn hos <udbyder>") — ægte
+  ankre virker i standalone, JS-`window.open` gør ikke. Brug ALDRIG `window.open` til eksterne links.
+- **Robusthed:** hvis et afsnit *har* `audio_url` men afspilningen fejler (`<audio> onError`, fx DR
+  geo/app-only), sættes `playErrorId` og samme link-out-pop-up vises (i stedet for tavshed).
+
 ## Podimo (oprindelig undersøgelse 2026-07-26)
 Bruger vil have Podimo-shows (fx "Casper ringer til Frank") i køen. Podimo er paywalled → Podcast
 Index kender dem ikke. **Fund:** direkte HTTP giver **403** (bot-beskyttelse/Cloudflare Turnstile);
