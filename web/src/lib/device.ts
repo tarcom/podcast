@@ -1,13 +1,14 @@
-const STORAGE_KEY = 'podcast_device_id'
+// Single-user indtil vi laver rigtigt login: ÉN fast session-id på tværs af alle
+// enheder (PC + mobil), så favoritter og hørt-tilstand er de samme overalt.
+// Når login kommer, mapper det bare til et stabilt device_id/user_id her.
+const FIXED_DEVICE_ID = 'allan-main'
 
 export function getDeviceId(): string {
-  const existing = localStorage.getItem(STORAGE_KEY)
-  if (existing) {
-    return existing
+  // overskriv evt. gammelt tilfældigt pr-browser-id
+  try {
+    localStorage.setItem('podcast_device_id', FIXED_DEVICE_ID)
+  } catch {
+    /* ignore */
   }
-
-  const generated =
-    'dev-' + Math.random().toString(36).slice(2) + Date.now().toString(36)
-  localStorage.setItem(STORAGE_KEY, generated)
-  return generated
+  return FIXED_DEVICE_ID
 }

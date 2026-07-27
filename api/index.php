@@ -60,6 +60,24 @@ try {
             );
             json_response(['status' => true, 'message' => 'migrated']);
 
+        // Flet alle enheders data ind i ét fast single-user-id (indtil login).
+        // Idempotent. Kald ?action=mergeDevices&confirm=yes én gang.
+        case 'mergeDevices':
+            if (($_GET['confirm'] ?? '') !== 'yes') {
+                json_response(['status' => false, 'error' => 'add &confirm=yes'], 400);
+            }
+            $target = 'allan-main';
+            $pdo = db($config);
+            // UPDATE IGNORE flytter rækker; kollisioner (samme feed/episode findes
+            // allerede under target) springes over og fjernes derefter.
+            $pdo->exec("UPDATE IGNORE podcast_favorites SET device_id = '$target' WHERE device_id <> '$target'");
+            $pdo->exec("DELETE FROM podcast_favorites WHERE device_id <> '$target'");
+            $pdo->exec("UPDATE IGNORE podcast_episode_state SET device_id = '$target' WHERE device_id <> '$target'");
+            $pdo->exec("DELETE FROM podcast_episode_state WHERE device_id <> '$target'");
+            $favs = (int) $pdo->query("SELECT COUNT(*) FROM podcast_favorites WHERE device_id = '$target'")->fetchColumn();
+            $states = (int) $pdo->query("SELECT COUNT(*) FROM podcast_episode_state WHERE device_id = '$target'")->fetchColumn();
+            json_response(['status' => true, 'target' => $target, 'favorites' => $favs, 'states' => $states]);
+
         // --- Podcast Index proxy (discovery) ---
         case 'discover':
             $max = isset($_GET['max']) ? max(1, min(100, (int) $_GET['max'])) : 60;
