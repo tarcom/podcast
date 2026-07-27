@@ -53,6 +53,25 @@ function dayLabel(unix: number): string {
   return d.toLocaleDateString('da-DK', { day: '2-digit', month: 'long', year: 'numeric' })
 }
 
+// Hvor kommer afsnittet fra (platform) — til mærkat + link-out-forklaring.
+const SOURCE_NAMES: [string, string][] = [
+  ['podimo', 'Podimo'], ['dr.dk', 'DR'], ['drlyd', 'DR'], ['dr-massive', 'DR'],
+  ['acast', 'Acast'], ['megaphone', 'Megaphone'], ['spreaker', 'Spreaker'],
+  ['libsyn', 'Libsyn'], ['buzzsprout', 'Buzzsprout'], ['simplecast', 'Simplecast'],
+  ['podbean', 'Podbean'], ['spotify', 'Spotify'], ['anchor', 'Spotify'], ['omny', 'Omny'],
+]
+function sourceOf(ep: EpisodeRow): string {
+  const u = ep.linkUrl || ep.audioUrl || ''
+  try {
+    const h = new URL(u).hostname.replace(/^www\./, '')
+    for (const [needle, name] of SOURCE_NAMES) if (h.includes(needle)) return name
+    const sld = h.split('.').slice(-2, -1)[0] || h
+    return sld.charAt(0).toUpperCase() + sld.slice(1)
+  } catch {
+    return ''
+  }
+}
+
 type DayGroup = { key: number; label: string; episodes: EpisodeRow[] }
 function groupByDay(eps: EpisodeRow[]): DayGroup[] {
   const groups: DayGroup[] = []
@@ -99,6 +118,7 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [current, setCurrent] = useState<EpisodeRow | null>(null)
   const [playing, setPlaying] = useState(false)
+  const [playErrorId, setPlayErrorId] = useState(0) // afsnit hvis lyd ikke kunne afspilles
   const lastSaved = useRef(0)
 
   // ---------- loaders ----------
@@ -214,6 +234,7 @@ export default function App() {
   // ---------- playback ----------
   const playEpisode = useCallback((ep: EpisodeRow) => {
     if (!ep.audioUrl) return
+    setPlayErrorId(0)
     setCurrent(ep)
     setPlaying(true)
     // resume position applied in the audio onLoadedMetadata handler below
@@ -505,16 +526,32 @@ export default function App() {
                 </p>
               </div>
             </div>
-            <div className="ep-actions">
-              {openEpisode.audioUrl ? (
+            {openEpisode.audioUrl && playErrorId !== openEpisode.episodeId ? (
+              <div className="ep-actions">
                 <button className="primary" onClick={() => { playEpisode(openEpisode); setOpenEpisode(null) }}>▶ Afspil</button>
-              ) : openEpisode.linkUrl ? (
-                <a className="primary" href={openEpisode.linkUrl} target="_blank" rel="noopener">↗ Åbn hos udbyder</a>
-              ) : null}
-              <button className="ghost" onClick={() => { markHeard(openEpisode, !openEpisode.playedAt); setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() }) }}>
-                {openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér hørt'}
-              </button>
-            </div>
+                <button className="ghost" onClick={() => { markHeard(openEpisode, !openEpisode.playedAt); setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() }) }}>
+                  {openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér hørt'}
+                </button>
+              </div>
+            ) : (
+              <div className="linkout">
+                <p className="linkout-msg">
+                  {playErrorId === openEpisode.episodeId
+                    ? <>⚠️ Afsnittet kunne ikke afspilles i appen (ligger måske kun hos <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>). Prøv at åbne det direkte:</>
+                    : <>🔒 Dette afsnit kan ikke afspilles inde i appen — det ligger bag <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>. Åbn det direkte hos udbyderen:</>}
+                </p>
+                {openEpisode.linkUrl ? (
+                  <a className="linkout-btn" href={openEpisode.linkUrl} target="_blank" rel="noopener noreferrer">
+                    ↗ Åbn hos {sourceOf(openEpisode) || 'udbyder'}
+                  </a>
+                ) : (
+                  <p className="muted">Der er desværre ikke noget offentligt link til dette afsnit.</p>
+                )}
+                <button className="ghost" onClick={() => { markHeard(openEpisode, !openEpisode.playedAt); setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() }) }}>
+                  {openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér som hørt'}
+                </button>
+              </div>
+            )}
             {openEpisode.description
               ? <div className="show-desc" dangerouslySetInnerHTML={{ __html: openEpisode.description }} />
               : <p className="muted">Ingen beskrivelse.</p>}
@@ -529,6 +566,14 @@ export default function App() {
           onTimeUpdate={onTimeUpdate}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          onError={() => {
+            // lyd kunne ikke afspilles (fx DR app-only/geo) → vis link-out-pop-up
+            if (current && current.audioUrl) {
+              setPlayErrorId(current.episodeId)
+              setPlaying(false)
+              setOpenEpisode(current)
+            }
+          }}
           onLoadedMetadata={() => {
             const el = audioRef.current
             if (el && current && current.positionSec && el.currentTime < 1) el.currentTime = current.positionSec
@@ -596,24 +641,28 @@ function EpisodeItem({
   const heard = !!ep.playedAt
   const art = ep.image || ep.podcastImage
   const playable = !!ep.audioUrl
-  const activate = () => { if (playable) onPlay(); else if (ep.linkUrl) window.open(ep.linkUrl, '_blank', 'noopener') }
+  const source = sourceOf(ep)
+  // ikke-afspillelig (Podimo/DR app-only) → åbn forklarings-pop-up (IKKE window.open,
+  // som blokeres i installerede PWA'er på Android)
+  const activate = () => { if (playable) onPlay(); else onInfo() }
   return (
     <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''}`}>
       <button
-        className={`ep-thumb ${playable ? '' : (ep.linkUrl ? 'link' : 'disabled')}`}
+        className={`ep-thumb ${playable ? '' : 'link'}`}
         onClick={activate}
-        title={playable ? 'Afspil' : ep.linkUrl ? 'Åbn hos udbyder' : 'Ingen lydfil'}
+        title={playable ? 'Afspil' : 'Kan ikke afspilles i appen — tryk for at åbne hos udbyder'}
       >
         {art ? <img src={art} alt="" loading="lazy" /> : <span className="ep-noimg" />}
-        <span className="ep-badge">{playable ? '▶' : ep.linkUrl ? '↗' : '–'}</span>
+        <span className="ep-badge">{playable ? '▶' : '↗'}</span>
       </button>
       <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
-        <span>
+        <span className="ep-meta">
+          {source && <em className={`src src-${source.toLowerCase()}`}>{source}</em>}
           {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
           {fmtDate(ep.publishedAt)}
           {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
-          {!ep.audioUrl && ' · kun hos udbyder'}
+          {!playable && ' · kun hos udbyder'}
         </span>
       </button>
       <button className={`heard-toggle ${heard ? 'on' : ''}`} onClick={onToggleHeard} title={heard ? 'Markér som uhørt' : 'Markér som hørt'}>
