@@ -227,6 +227,80 @@ try {
             }
             json_response(['status' => true, 'updated' => $count]);
 
+        // --- Podimo (paywall; scrapes via HTPC-scraper, gemmes som link-out-afsnit) ---
+        // Syntetisk feed_id = -crc32(slug) → kolliderer ikke med Podcast Index (positive id'er).
+        // episode_id = crc32(uuid). audio_url NULL → frontend viser "↗ åbn hos Podimo".
+        case 'podimo.add':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            $deviceId = required_string($body, 'deviceId');
+            $url = required_string($body, 'url');
+            if (!preg_match('~podimo\.com/[a-z]{2}/shows/([^/?#]+)~i', $url, $mm)) {
+                json_response(['status' => false, 'error' => 'Ikke en Podimo show-URL'], 422);
+            }
+            $slug = strtolower($mm[1]);
+            $feedId = -1 * (int) crc32($slug);
+            $showUrl = 'https://podimo.com/dk/shows/' . $slug;
+            $title = ucwords(str_replace('-', ' ', $slug));
+            $pdo = db($config);
+            $pdo->prepare(
+                'INSERT INTO podcast_favorites (device_id, feed_id, title, image, author, language, feed_url, added_via)
+                 VALUES (:dev, :feed, :title, "", "", "da", :url, "podimo")
+                 ON DUPLICATE KEY UPDATE feed_url = VALUES(feed_url)'
+            )->execute(['dev' => $deviceId, 'feed' => $feedId, 'title' => $title, 'url' => $showUrl]);
+            json_response(['status' => true, 'feedId' => $feedId, 'title' => $title, 'showUrl' => $showUrl]);
+
+        case 'podimo.ingest':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            $url = required_string($body, 'url');
+            if (!preg_match('~shows/([^/?#]+)~i', $url, $mm)) {
+                json_response(['status' => false, 'error' => 'bad url'], 422);
+            }
+            $slug = strtolower($mm[1]);
+            $feedId = -1 * (int) crc32($slug);
+            $pdo = db($config);
+            // opdatér show-titel/billede på favorit-rækker (fjerner placeholder-titlen)
+            $t = trim((string) ($body['title'] ?? ''));
+            $img = trim((string) ($body['image'] ?? ''));
+            if ($t !== '' || $img !== '') {
+                $pdo->prepare(
+                    'UPDATE podcast_favorites SET
+                        title = CASE WHEN :hasT = 1 THEN :t ELSE title END,
+                        image = CASE WHEN :hasI = 1 THEN :i ELSE image END,
+                        last_fetched = NOW()
+                     WHERE feed_id = :feed AND added_via = "podimo"'
+                )->execute(['hasT' => $t !== '' ? 1 : 0, 't' => $t, 'hasI' => $img !== '' ? 1 : 0, 'i' => $img, 'feed' => $feedId]);
+            }
+            $ins = $pdo->prepare(
+                'INSERT INTO podcast_episodes
+                    (feed_id, episode_id, title, description, published_at, audio_url, link_url, image, duration_sec)
+                 VALUES (:feed, :ep, :title, :descr, :pub, NULL, :link, :image, :dur)
+                 ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
+                    published_at = VALUES(published_at), link_url = VALUES(link_url),
+                    image = VALUES(image), duration_sec = VALUES(duration_sec)'
+            );
+            $n = 0;
+            foreach (($body['episodes'] ?? []) as $e) {
+                if (!is_array($e) || empty($e['uuid'])) {
+                    continue;
+                }
+                $ins->execute([
+                    'feed'  => $feedId,
+                    'ep'    => (int) crc32((string) $e['uuid']),
+                    'title' => mb_substr((string) ($e['name'] ?? 'Episode'), 0, 512),
+                    'descr' => (string) ($e['description'] ?? ''),
+                    'pub'   => (int) ($e['datePublished'] ?? 0),
+                    'link'  => (string) ($e['url'] ?? $url),
+                    'image' => (string) ($e['image'] ?? ''),
+                    'dur'   => max(0, (int) ($e['duration'] ?? 0)),
+                ]);
+                $n++;
+            }
+            json_response(['status' => true, 'feedId' => $feedId, 'episodes' => $n]);
+
         default:
             json_response(['status' => false, 'error' => 'Unknown action'], 404);
     }

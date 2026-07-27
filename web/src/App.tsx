@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addFavorite,
+  addPodimoShow,
   discover,
   feedEpisodes,
   getPodcast,
@@ -141,6 +142,18 @@ export default function App() {
     setExploreErr('')
     setExploreBusy(true)
     try {
+      // Podimo-show? (paywall) → egen vej; afsnit hentes af scraperen bagefter
+      if (/podimo\.com\/[a-z]{2}\/shows\//i.test(url)) {
+        const title = await addPodimoShow(deviceId, url)
+        if (!title) {
+          setExploreErr('Kunne ikke tilføje Podimo-show. Tjek at det er en show-URL.')
+          return
+        }
+        setUrlInput('')
+        await loadFavorites()
+        setExploreErr(`✓ Tilføjet “${title}” — afsnit dukker op i køen inden for ~30 min (link til Podimo; kan ikke afspilles i app'en).`)
+        return
+      }
       const p = await resolveUrl(url)
       if (!p) {
         setExploreErr('Ingen podcast fundet på den URL (Podcast Index kender den ikke).')
@@ -284,8 +297,8 @@ export default function App() {
       const art = current.image || current.podcastImage
       ms.metadata = new MediaMetadata({
         title: current.title,
-        artist: current.podcastTitle || 'NordPod',
-        album: 'NordPod',
+        artist: current.podcastTitle || 'All DK Podcasts',
+        album: 'All DK Podcasts',
         artwork: art ? [96, 192, 512].map((sz) => ({ src: art, sizes: `${sz}x${sz}`, type: 'image/jpeg' })) : [],
       })
     }
@@ -308,8 +321,8 @@ export default function App() {
     <div className="app">
       <header className="hero">
         <div>
-          <p className="kicker">Podcast uden reklame-overload</p>
-          <h1>NordPod</h1>
+          <p className="kicker">Alle dine danske podcasts ét sted</p>
+          <h1>All DK Podcasts</h1>
         </div>
         <div className="hero-stat">
           <span>{favorites.length} favoritter</span>
@@ -352,7 +365,7 @@ export default function App() {
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addByUrl()}
-              placeholder="…eller tilføj en podcast via RSS-URL"
+              placeholder="…eller indsæt RSS-URL eller Podimo show-URL"
             />
             <button onClick={addByUrl} disabled={exploreBusy}>
               Tilføj

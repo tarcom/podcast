@@ -1,7 +1,7 @@
 {
-  "name": "NordPod",
-  "short_name": "NordPod",
-  "description": "Minimalistisk podcast app med dansk-først indhold.",
+  "name": "All DK Podcasts",
+  "short_name": "DK Podcasts",
+  "description": "Alle dine danske podcasts ét sted — også Podimo-shows.",
   "start_url": "/podcast/",
   "scope": "/podcast/",
   "display": "standalone",

@@ -66,6 +66,7 @@ function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $device
     $stmt = $pdo->prepare(
         'SELECT feed_id FROM podcast_favorites
          WHERE device_id = :dev
+           AND added_via <> "podimo"
            AND (last_fetched IS NULL OR last_fetched < (NOW() - INTERVAL :stale SECOND))
          ORDER BY last_fetched IS NOT NULL, last_fetched ASC
          LIMIT ' . (int) PODCAST_MAX_REFRESH_PER_CALL

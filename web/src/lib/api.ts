@@ -61,6 +61,12 @@ export async function resolveUrl(url: string): Promise<Podcast | null> {
   return null
 }
 
+// Tilføj et Podimo-show via dets show-URL. Afsnit hentes af HTPC-scraperen bagefter.
+export async function addPodimoShow(deviceId: string, url: string): Promise<string | null> {
+  const { data } = await client.post('', { deviceId, url }, { params: { action: 'podimo.add' } })
+  return data && data.status ? (data.title as string) : null
+}
+
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
   const { data } = await client.get('', { params: { action: 'podcast', id: feedId } })
   if (data.feed) return normalizePodcast(data.feed)

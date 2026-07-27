@@ -1,2 +1,7 @@
 api/config.php
 .ftp-credentials
+
+# Podimo-scraper (HTPC)
+scraper/.venv/
+scraper/scrape.log
+scraper/__pycache__/
