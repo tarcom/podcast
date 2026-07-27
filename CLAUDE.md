@@ -1,4 +1,7 @@
-# CLAUDE.md — NordPod (podcast)
+# CLAUDE.md — All DK Podcasts (tidl. NordPod)
+
+**Visningsnavn er nu "All DK Podcasts"** (h1/manifest/title omdøbt 2026-07-27). Interne navne
+(cache `nordpod-vN`, repo `podcast`, denne fil) er uændrede for ikke at bryde ting.
 
 Reklame-light podcast-app, kun til Allan (ingen login endnu). **Live på https://aogj.com/podcast/**
 (one.com, PHP + delt `aogj_com`-MySQL). Se `README.md` for fuld arkitektur — her kun de ting der
@@ -53,7 +56,29 @@ er lette at snuble over.
   (`favorites.add` med feeds fra `search`), sæt localStorage i Selenium, reload. Husk at fjerne
   test-favoritterne bagefter (`favorites.remove`).
 
-## Podimo (undersøgt 2026-07-26 — IKKE bygget endnu)
+## Podimo-integration (BYGGET 2026-07-27)
+Podimo er paywalled → Podcast Index kender dem ikke, og lyden er DRM-låst (kan ikke afspilles
+in-app). Men **offentlige shows viser afsnitslisten uden login** (ikke alle — nogle er helt
+eksklusive). Løsning = **link-out** (besked om nye afsnit + "↗ åbn hos Podimo").
+- **one.com kan IKKE scrape Podimo** (JS + Cloudflare Turnstile). Derfor en **HTPC-scraper**:
+  `scraper/scrape_podimo.py` (egen venv `scraper/.venv`, Selenium+requests), **cron hvert 30. min**
+  (`scraper/run.sh` → `scrape.log`). Den henter `favorites.list?deviceId=allan-main`, filtrerer
+  `added_via=='podimo'`, renderer hver show-side headless og POSTer afsnit til `podimo.ingest`.
+- **Udtræk (robust):** Podimo indlejrer per-afsnit **`<script id="episodeSeo<uuid>" type=ld+json>`
+  PodcastEpisode**-blokke → `name`/`datePublished`/`description`/`duration`(ISO PT#S)/`url`. Show-
+  titel fra **`<h1>`** (ren; og:title har tagline + "| Eksklusivt på Podimo"), billede fra
+  `og:image`, afsnits-artwork fra DOM-kortenes `img`. Kun de nyeste ~15 har ld+json (nok til "nyt").
+- **Backend:** `podimo.add` (frontend: indsæt Podimo show-URL i "tilføj via URL"-boksen — App.tsx
+  `addByUrl` router på `podimo.com/../shows/`) og `podimo.ingest` (scraper). **Syntetisk
+  `feed_id = -crc32(slug)`** (negativ → kolliderer ikke med Podcast Index' positive id'er),
+  **`episode_id = crc32(uuid)`** (episode_id-kolonnen er BIGINT, kan ikke rumme Podimos UUID).
+  `audio_url` NULL + `link_url` = Podimo-episode-URL → frontendens eksisterende link-out-visning
+  (`↗`). **Regex-delimiter:** brug `~...~` ikke `#...#` (mønstret har `#` i `[^/?#]`).
+  On-open PI-refresh (`podcast_store.php`) springer `added_via='podimo'` over.
+- Seedet+verificeret: Her Går Det Godt + Casper ringer til Frank (15 afsnit hver, link-out i køen).
+  **Note:** Podimo-afsnit uden `audio_url` kan ikke afspilles/auto-videre — kun link-out.
+
+## Podimo (oprindelig undersøgelse 2026-07-26)
 Bruger vil have Podimo-shows (fx "Casper ringer til Frank") i køen. Podimo er paywalled → Podcast
 Index kender dem ikke. **Fund:** direkte HTTP giver **403** (bot-beskyttelse/Cloudflare Turnstile);
 **Selenium (rigtig browser) kommer forbi**, MEN **udlogget viser show-siden ingen afsnitsliste** —
