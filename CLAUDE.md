@@ -69,6 +69,17 @@ er lette at snuble over.
   `onSeekCommit`) så scrub ikke spammer seeks. `fmtClock()` formaterer sekunder → mm:ss/t:mm:ss.
 - **Media Session** (låseskærm) opdateret til samme 10/30 sek + en `seekto`-handler (træk på
   notifikationens tidslinje). **SW-cache bumpet `nordpod-v4`→`v5`** (shell-ændring). Deploy: `web`.
+- **PWA hang på gammelt JS (fixet s.d. i `main.tsx`):** brugeren så ikke de nye knapper efter deploy.
+  Årsag: en **installeret PWA lukkes sjældent helt ned** — SW'en aktiverede godt nok den nye version
+  (`skipWaiting`+`claim`), men **siden genindlæses aldrig**, så det gamle bundle blev hængende.
+  Fix: `main.tsx` kalder nu `reg.update()` ved opstart **og** hver gang app'en kommer i forgrunden
+  (`visibilitychange`), og genindlæser **én gang** på `controllerchange` (gardet med `hadController`
+  så den allerførste registrering ikke trigger et reload). **Fremover slår deploys altså igennem af
+  sig selv** ved næste gang app'en åbnes — cache-bump alene er ikke nok.
+- **Verifikationstrick:** `device_id` er fast `allan-main`, så man kan indlæse den **live** side i
+  Selenium (`scraper/.venv`) og se Allans rigtige kø — klik `.ep-thumb:not(.link)` for at afspille,
+  og aflæs/klik `footer.player`. Brugt til at bevise at spol-knapperne virkede (+30/−10 på
+  `audio.currentTime`) mens brugerens egen enhed viste gammelt UI.
 
 ## Podimo-integration (BYGGET 2026-07-27)
 Podimo er paywalled → Podcast Index kender dem ikke, og lyden er DRM-låst (kan ikke afspilles
