@@ -81,6 +81,20 @@ er lette at snuble over.
   og aflæs/klik `footer.player`. Brugt til at bevise at spol-knapperne virkede (+30/−10 på
   `audio.currentTime`) mens brugerens egen enhed viste gammelt UI.
 
+## Fremdrift pr. afsnit i køen (2026-07-28)
+- Hvert afsnit man er **i gang med** viser en tynd fremdriftsbjælke + "**X min tilbage**"
+  (`EpisodeItem`: `.ep-progress`/`.ep-progress-fill`/`.ep-left`). Vises kun når `pos > 30 sek` og
+  `pos < 99%` af varigheden, og ikke når afsnittet er hørt — ellers ville hver række støje.
+- **Bevidst IKKE en trækbar slider pr. række:** i en scrollende liste rammer man den ved et uheld
+  og flytter afspilningen. Fremdrift = visning i listen; seek sker i afspilleren nederst.
+- **Live-opdatering:** `liveTime`-prop sendes kun til det afsnit der er `current` (så bjælken
+  bevæger sig uden at re-rendere hele listen). `onTimeUpdate` patcher desuden `queue`/`detailEpisodes`
+  med `positionSec` i samme 8-sek.-throttle som backend-gemningen, så bjælken forbliver korrekt
+  når afsnittet ikke længere er `current`. Data fandtes i forvejen (`st.position_sec` joines i
+  `podcast_newest_episodes`), så **ingen backend-ændring** var nødvendig.
+- **NB ved test:** Selenium-tests mod live-siden skriver i Allans **rigtige** lytte-position
+  (`allan-main`). Afspil helst et afsnit han er færdig med, eller nulstil bagefter via `state.set`.
+
 ## Podimo-integration (BYGGET 2026-07-27)
 Podimo er paywalled → Podcast Index kender dem ikke, og lyden er DRM-låst (kan ikke afspilles
 in-app). Men **offentlige shows viser afsnitslisten uden login** (ikke alle — nogle er helt

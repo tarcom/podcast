@@ -307,14 +307,20 @@ export default function App() {
     const now = Date.now()
     if (now - lastSaved.current > 8000) {
       lastSaved.current = now
+      const secs = Math.floor(el.currentTime)
       saveState(deviceId, {
         episodeId: current.episodeId,
         feedId: current.feedId,
-        positionSec: Math.floor(el.currentTime),
+        positionSec: secs,
         durationSec: Math.floor(el.duration || current.durationSec),
       }).catch(() => {})
+      // hold listens fremdriftsbjælke opdateret, også når afsnittet ikke længere er "current"
+      const patch = (list: EpisodeRow[]) =>
+        list.map((e) => (e.episodeId === current.episodeId ? { ...e, positionSec: secs } : e))
+      setQueue(patch)
+      setDetailEpisodes(patch)
     }
-  }, [current, deviceId])
+  }, [current, deviceId, seeking])
 
   const togglePlay = useCallback(() => {
     const el = audioRef.current
@@ -492,6 +498,7 @@ export default function App() {
                     key={ep.episodeId}
                     ep={ep}
                     isCurrent={current?.episodeId === ep.episodeId}
+                    liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
@@ -537,6 +544,7 @@ export default function App() {
                     key={ep.episodeId}
                     ep={ep}
                     isCurrent={current?.episodeId === ep.episodeId}
+                    liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
@@ -692,12 +700,14 @@ function PodcastCard({
 function EpisodeItem({
   ep,
   isCurrent,
+  liveTime,
   onPlay,
   onToggleHeard,
   onInfo,
 }: {
   ep: EpisodeRow
   isCurrent: boolean
+  liveTime?: number // sekunder for det afsnit der spiller lige nu (så bjælken bevæger sig)
   onPlay: () => void
   onToggleHeard: () => void
   onInfo: () => void
@@ -706,6 +716,13 @@ function EpisodeItem({
   const art = ep.image || ep.podcastImage
   const playable = !!ep.audioUrl
   const source = sourceOf(ep)
+  // fremdrift: brug live-tiden for det aktuelle afsnit, ellers den gemte position
+  const pos = isCurrent && liveTime != null ? liveTime : ep.positionSec || 0
+  const total = ep.durationSec || 0
+  // vis kun når man reelt er i gang (>30 sek. inde og ikke stort set færdig)
+  const started = !heard && total > 0 && pos > 30 && pos < total * 0.99
+  const pct = started ? Math.min(100, (pos / total) * 100) : 0
+  const leftMin = Math.max(1, Math.round((total - pos) / 60))
   // ikke-afspillelig (Podimo/DR app-only) → åbn forklarings-pop-up (IKKE window.open,
   // som blokeres i installerede PWA'er på Android)
   const activate = () => { if (playable) onPlay(); else onInfo() }
@@ -728,6 +745,14 @@ function EpisodeItem({
           {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
           {!playable && ' · kun hos udbyder'}
         </span>
+        {started && (
+          <span className="ep-progress" title={`${fmtClock(pos)} af ${fmtClock(total)}`}>
+            <span className="ep-progress-track">
+              <span className="ep-progress-fill" style={{ width: `${pct}%` }} />
+            </span>
+            <em className="ep-left">{leftMin} min tilbage</em>
+          </span>
+        )}
       </button>
       <button className={`heard-toggle ${heard ? 'on' : ''}`} onClick={onToggleHeard} title={heard ? 'Markér som uhørt' : 'Markér som hørt'}>
         ✓
