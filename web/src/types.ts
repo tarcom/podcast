@@ -25,6 +25,7 @@ export type EpisodeRow = {
   podcastImage?: string
   playedAt?: string | null // non-null => heard (greyed)
   positionSec: number
+  updatedAt?: string | null // hvornår state sidst blev rørt => "senest lyttet" i Fortsætter
 }
 
 export type Favorite = {

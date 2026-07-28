@@ -58,7 +58,24 @@ try {
                     PRIMARY KEY (device_id, episode_id), KEY idx_state_device_played (device_id, played_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
-            json_response(['status' => true, 'message' => 'migrated']);
+            // Efter-migrationer: CREATE TABLE IF NOT EXISTS tilføjer IKKE kolonner til en
+            // tabel der allerede findes, så nyere kolonner skal ALTER'es ind separat.
+            // Hver kørsel er idempotent (fejler kolonnen findes → ignorér).
+            $added = [];
+            $alters = [
+                'updated_at' => 'ALTER TABLE podcast_episode_state
+                    ADD COLUMN updated_at TIMESTAMP NOT NULL
+                    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+            ];
+            foreach ($alters as $col => $sql) {
+                try {
+                    $pdo->exec($sql);
+                    $added[] = $col;
+                } catch (Throwable $e) {
+                    // kolonnen findes allerede — fint
+                }
+            }
+            json_response(['status' => true, 'message' => 'migrated', 'columnsAdded' => $added]);
 
         // Flet alle enheders data ind i ét fast single-user-id (indtil login).
         // Idempotent. Kald ?action=mergeDevices&confirm=yes én gang.

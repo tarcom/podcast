@@ -31,6 +31,11 @@ function fmtDur(sec: number): string {
   const m = Math.round((sec % 3600) / 60)
   return h > 0 ? `${h} t ${m} min` : `${m} min`
 }
+// "i gang med": mere end 30 sek. inde, men ikke stort set færdig. Bruges både af
+// Fortsætter-sektionen og af fremdriftsbjælken, så de aldrig kan komme ud af trit.
+function isInProgress(pos: number, total: number, heard: boolean): boolean {
+  return !heard && total > 0 && pos > 30 && pos < total * 0.99
+}
 // klokke-format til progress-bar: mm:ss eller t:mm:ss
 function fmtClock(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0
@@ -382,6 +387,11 @@ export default function App() {
 
   const unheardCount = queue.filter((e) => !e.playedAt).length
 
+  // "Fortsætter": afsnit man er midt i, senest lyttede først.
+  const continuing = queue
+    .filter((e) => isInProgress(e.positionSec || 0, e.durationSec || 0, !!e.playedAt))
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+
   // ---------- render ----------
   return (
     <div className="app">
@@ -480,7 +490,29 @@ export default function App() {
           </div>
           {favorites.length === 0 && <p className="muted">Følg nogle podcasts, så samler vi de nyeste afsnit her.</p>}
           {favorites.length > 0 && unheardCount === 0 && <p className="muted">Alt er hørt 🎉</p>}
-          {groupByDay(queue.filter((e) => !e.playedAt)).map((g) => (
+
+          {continuing.length > 0 && (
+            <div className="daygroup continuing">
+              <div className="day-head">
+                <h3>▶ Fortsætter</h3>
+              </div>
+              <ul className="episodes">
+                {continuing.map((ep) => (
+                  <EpisodeItem
+                    key={ep.episodeId}
+                    ep={ep}
+                    isCurrent={current?.episodeId === ep.episodeId}
+                    liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
+                    onPlay={() => playEpisode(ep)}
+                    onToggleHeard={() => markHeard(ep, !ep.playedAt)}
+                    onInfo={() => setOpenEpisode(ep)}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {groupByDay(queue.filter((e) => !e.playedAt && !isInProgress(e.positionSec || 0, e.durationSec || 0, false))).map((g) => (
             <div className="daygroup" key={g.key}>
               <div className="day-head">
                 <h3>{g.label}</h3>
@@ -720,7 +752,7 @@ function EpisodeItem({
   const pos = isCurrent && liveTime != null ? liveTime : ep.positionSec || 0
   const total = ep.durationSec || 0
   // vis kun når man reelt er i gang (>30 sek. inde og ikke stort set færdig)
-  const started = !heard && total > 0 && pos > 30 && pos < total * 0.99
+  const started = isInProgress(pos, total, heard)
   const pct = started ? Math.min(100, (pos / total) * 100) : 0
   const leftMin = Math.max(1, Math.round((total - pos) / 60))
   // ikke-afspillelig (Podimo/DR app-only) → åbn forklarings-pop-up (IKKE window.open,

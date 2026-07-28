@@ -89,7 +89,7 @@ function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200): 
         'SELECT e.feed_id, e.episode_id, e.title, e.description, e.published_at, e.audio_url,
                 e.link_url, e.image, e.duration_sec,
                 f.title AS podcast_title, f.image AS podcast_image,
-                st.played_at, st.position_sec
+                st.played_at, st.position_sec, st.updated_at
          FROM podcast_episodes e
          JOIN podcast_favorites f ON f.feed_id = e.feed_id AND f.device_id = :dev
          LEFT JOIN podcast_episode_state st ON st.device_id = :dev AND st.episode_id = e.episode_id
@@ -123,7 +123,7 @@ function podcast_feed_episodes(array $config, PDO $pdo, string $deviceId, int $f
     $stmt = $pdo->prepare(
         'SELECT e.feed_id, e.episode_id, e.title, e.description, e.published_at, e.audio_url,
                 e.link_url, e.image, e.duration_sec,
-                st.played_at, st.position_sec
+                st.played_at, st.position_sec, st.updated_at
          FROM podcast_episodes e
          LEFT JOIN podcast_episode_state st ON st.device_id = :dev AND st.episode_id = e.episode_id
          WHERE e.feed_id = :feed

@@ -41,6 +41,7 @@ function normalizeEpisodeRow(r: RawRecord): EpisodeRow {
     podcastImage: https(s(r.podcast_image)),
     playedAt: (r.played_at as string | null) ?? null,
     positionSec: n(r.position_sec),
+    updatedAt: (r.updated_at as string | null) ?? null,
   }
 }
 

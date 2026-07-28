@@ -94,6 +94,38 @@ er lette at snuble over.
   `podcast_newest_episodes`), så **ingen backend-ændring** var nødvendig.
 - **NB ved test:** Selenium-tests mod live-siden skriver i Allans **rigtige** lytte-position
   (`allan-main`). Afspil helst et afsnit han er færdig med, eller nulstil bagefter via `state.set`.
+  **Og omvendt:** hvis en position ændrer sig "af sig selv" under fejlsøgning, er det sandsynligvis
+  Allan der lytter på telefonen samtidig — tjek ved at sample `position_sec` to gange med ~45 sek.
+  mellemrum; vokser den i realtid, er det ægte lytning, ikke en efterladt testbrowser.
+
+## "Fortsætter"-sektion (2026-07-28)
+- Øverst i Kø-fanen vises **▶ Fortsætter** med de afsnit man er midt i (`.daygroup.continuing`,
+  lys grøn boks). De **fjernes fra dag-grupperne** så de ikke optræder to gange.
+- Fælles kriterie `isInProgress(pos, total, heard)` (>30 sek. inde, <99% færdig, ikke hørt) bruges
+  af **både** sektionen og fremdriftsbjælken, så de aldrig kommer ud af trit.
+- Sorteret **senest lyttet først** via `st.updated_at`. Kolonnen fandtes allerede i skemaet men blev
+  ikke selekteret — nu med i `podcast_newest_episodes`/`podcast_feed_episodes` → `updatedAt` på
+  `EpisodeRow`.
+- **Migrations-faldgrube (vigtig):** `CREATE TABLE IF NOT EXISTS` tilføjer **ikke** nye kolonner til
+  en tabel der allerede findes, så en kolonne tilføjet senere i skemaet mangler måske i den live DB.
+  `?action=migrate` har derfor nu en **idempotent ALTER-liste** (`$alters`) der try/catch'er hver
+  kolonne og returnerer `columnsAdded`. Kør den efter skemaændringer. (Her returnerede den `[]` =
+  `updated_at` fandtes allerede.)
+
+## Castbox-feature-vurdering (2026-07-28)
+Allan bruger til dagligt **Castbox**; vi gennemgik dens features. **Besluttet/bygget:** spol ±10/30,
+fremdrift i kø, Fortsætter-sektion. **Fravalgt indtil videre:** offline download (se nedenfor).
+**Endnu ikke besluttet:** afspilningshastighed, sleep timer, auto-spring-intro pr. podcast,
+volume boost. **Vurderet uegnet:** in-audio-søgning (kræver transskribering), CarPlay/Watch/Alexa/
+FM-radio (kan ikke i en PWA). Cross-device sync **har** vi allerede (fast `allan-main`).
+- **Offline download — undersøgt, udskudt (ikke afvist):** teknisk fint. Chrome/Android giver en
+  origin op til **60% af diskpladsen**, og afsnit vejer **27–57 MB**, så "flere hundrede MB" ≈ 8-10
+  afsnit. Kræver `navigator.storage.persist()` (ellers kan Android smide dem væk) + plads-UI.
+  **Vigtigt fund:** 5 af 6 af Allans lyd-CDN'er sender CORS (`api.dr.dk`, `traffic.omny.fm`,
+  `*.simplecastaudio.com`, `buzzsprout`) og kan hentes+gemmes som Blob (god spoling), men
+  **`media.pod.space` sender INGEN CORS** → kun opaque respons, ingen pålidelig spoling. Plan var
+  at skjule download-knappen der frem for at proxy'e lyden gennem one.com (delt hosting, dårlig idé
+  ved hundredvis af MB).
 
 ## Podimo-integration (BYGGET 2026-07-27)
 Podimo er paywalled → Podcast Index kender dem ikke, og lyden er DRM-låst (kan ikke afspilles

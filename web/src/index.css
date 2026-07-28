@@ -133,6 +133,12 @@ button:disabled { opacity: 0.6; cursor: default; }
 .daygroup { margin-bottom: 8px; }
 .day-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 2px; }
 .day-head h3 { font-family: 'Fraunces', serif; font-size: 15px; color: var(--moss); text-transform: capitalize; }
+
+/* "Fortsætter" — afsnit man er midt i, løftet op øverst i køen */
+.daygroup.continuing { background: #eef4ef; border-radius: 12px; padding: 2px 10px 6px; margin-bottom: 16px; }
+.daygroup.continuing .day-head h3 { color: var(--terracotta); }
+.daygroup.continuing .episode { border-bottom-color: #dbe6dd; }
+.daygroup.continuing .episode.current { background: transparent; }
 .clear-below { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; color: var(--muted); cursor: pointer; }
 .clear-below:hover { color: var(--danger); border-color: var(--danger); }
 
