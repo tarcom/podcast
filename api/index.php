@@ -98,6 +98,81 @@ try {
             json_response(['status' => true, 'target' => $target, 'favorites' => $favs, 'states' => $states]);
 
         // --- Podcast Index proxy (discovery) ---
+        // DR Lyd: afsnit som DR kun udgiver i sin egen app (fx "Ubegribeligt" 2026-sæsonen).
+        // Leveres af HTPC-scraperen (scraper/scrape_dr.py). Gemmes som link-out (audio_url NULL)
+        // på det EKSISTERENDE DR-feed, så de står sammen med de rigtige RSS-afsnit.
+        case 'dr.ingest':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            $feedId = (int) ($body['feedId'] ?? 0);
+            if ($feedId === 0) {
+                json_response(['status' => false, 'error' => 'feedId is required'], 422);
+            }
+            $pdo = db($config);
+
+            // Findes afsnittet allerede AFSPILLELIGT fra RSS, skal vi ikke lave en link-out-dublet.
+            // Vi matcher på UDGIVELSESDAG, ikke titel: DR Lyd og RSS skriver titlerne forskelligt
+            // (fx "Sara & Monopolet 27. juni" vs. dagens tema), så titel-match ramte aldrig.
+            $playableDays = [];
+            $q = $pdo->prepare(
+                'SELECT published_at FROM podcast_episodes WHERE feed_id = :f AND audio_url IS NOT NULL'
+            );
+            $q->execute(['f' => $feedId]);
+            foreach ($q->fetchAll() as $r) {
+                $playableDays[gmdate('Y-m-d', (int) $r['published_at'])] = true;
+            }
+
+            // Selvoprydning: fjern tidligere link-out-afsnit der nu findes afspilleligt.
+            $pruned = 0;
+            $old = $pdo->prepare(
+                'SELECT episode_id, published_at FROM podcast_episodes
+                 WHERE feed_id = :f AND audio_url IS NULL'
+            );
+            $old->execute(['f' => $feedId]);
+            $delStmt = $pdo->prepare('DELETE FROM podcast_episodes WHERE feed_id = :f AND episode_id = :e');
+            foreach ($old->fetchAll() as $r) {
+                if (isset($playableDays[gmdate('Y-m-d', (int) $r['published_at'])])) {
+                    $delStmt->execute(['f' => $feedId, 'e' => (int) $r['episode_id']]);
+                    $pruned++;
+                }
+            }
+
+            $ins = $pdo->prepare(
+                'INSERT INTO podcast_episodes
+                    (feed_id, episode_id, title, description, published_at, audio_url, link_url, image, duration_sec)
+                 VALUES (:feed, :ep, :title, :descr, :pub, NULL, :link, :image, :dur)
+                 ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
+                    published_at = VALUES(published_at), link_url = VALUES(link_url),
+                    image = VALUES(image), duration_sec = VALUES(duration_sec)'
+            );
+
+            $added = 0;
+            $skipped = 0;
+            foreach (($body['episodes'] ?? []) as $e) {
+                if (!is_array($e) || empty($e['productionNumber'])) {
+                    continue;
+                }
+                $title = mb_substr((string) ($e['title'] ?? 'Episode'), 0, 512);
+                $pub = (int) ($e['publishedAt'] ?? 0);
+                if (isset($playableDays[gmdate('Y-m-d', $pub)])) {
+                    $skipped++;
+                    continue;
+                }
+                $ins->execute([
+                    'feed'  => $feedId,
+                    'ep'    => rss_stable_id((string) $e['productionNumber']),
+                    'title' => $title,
+                    'descr' => (string) ($e['description'] ?? ''),
+                    'pub'   => $pub,
+                    'link'  => trim((string) ($e['url'] ?? '')) ?: null,
+                    'image' => trim((string) ($e['image'] ?? '')) ?: null,
+                    'dur'   => max(0, (int) ($e['durationSec'] ?? 0)),
+                ]);
+                $added++;
+            }
+            json_response(['status' => true, 'added' => $added, 'skippedAsDuplicate' => $skipped, 'prunedRedundant' => $pruned]);
+
         // Tving en genindlæsning af ét feeds afsnit direkte fra dets RSS (uden om Podcast Index).
         // ?action=feed.refreshRss&deviceId=..&id=<feedId>
         case 'feed.refreshRss':

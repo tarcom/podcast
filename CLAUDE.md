@@ -143,7 +143,25 @@ Fx teaser "Nanoteknologi" (40 s, 25/6-2026) ↔ rigtigt afsnit "Nanoteknologi" (
   nøglen er **ikke** i browser-bundlen (DR kalder serverside), ingen mp3/m3u8 i sidens HTML
   (kun live-radio-streams), og et afspilnings-klik i headless gav ingen asset-URL. **`login.dr.dk`
   indlæses på siden** → peger på krav om DR-konto. Derfor er 2026-sæsonen realistisk **link-out**,
-  som Podimo — ikke afspilning i app'en.
+  som Podimo — ikke afspilning i app'en. (DR's egen show-beskrivelse siger da også "Hør alle afsnit
+  i DR Lyd".)
+- **BYGGET: `scraper/scrape_dr.py`** (+ `run_dr.sh`, cron **`17 * * * *`**, log `scrape_dr.log`).
+  **Kræver INGEN browser** — modsat Podimo-scraperen: `__NEXT_DATA__` ligger i server-HTML'en, så
+  ren `requests` er nok. Flow: favoritter → behold `dr.dk`-feeds → DR Lyd-sidens URL fra Podcast
+  Index' `link`-felt (`?action=podcast`) → parse `episodesGroups[].items` (kun `hasAudioAssets`) →
+  POST `?action=dr.ingest`.
+- **`dr.ingest`** gemmer dem som link-out (`audio_url` NULL, `link_url` = `presentationUrl`) på det
+  **eksisterende** DR-feed, så de står sammen med RSS-afsnittene. `episode_id = rss_stable_id(
+  productionNumber)` (deterministisk, kolliderer ikke med PI's meget større id'er).
+- **Dublet-reglen er DATO, ikke titel (vigtig lære):** første forsøg matchede på titel og fandt
+  **nul** dubletter — DR Lyd og RSS navngiver afsnit forskelligt (fx "Sara & Monopolet 27. juni" vs.
+  dagens tema), så der blev lavet 24 + 16 overflødige link-outs for Sara/Brinkmann, hvis RSS
+  **allerede er aktuelt**. Nu springes et afsnit over hvis der findes et **afspilleligt** afsnit
+  samme **udgivelsesdag**, og endpointet **rydder selv op** i tidligere link-outs der nu er dækket
+  (`prunedRedundant`). Efter fix: Ubegribeligt 78 afspillelige + 25 link-out (2026), Sara 194+6,
+  Brinkmann 191+9 — **0 overflødige**.
+- **Kun indeværende år:** serie-siden leverer kun det aktuelle års gruppe udfyldt (øvrige år loades
+  først ved klik), hvilket er rigeligt til "hvad er nyt".
 
 ## Popularitet / hitlister (2026-07-28)
 **Konklusion på "kan vi vise downloadtal?": NEJ til ægte downloadtal.** De er private hos
