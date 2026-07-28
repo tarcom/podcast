@@ -112,6 +112,39 @@ er lette at snuble over.
   kolonne og returnerer `columnsAdded`. Kør den efter skemaændringer. (Her returnerede den `[]` =
   `updated_at` fandtes allerede.)
 
+## DR: læs RSS DIREKTE, ikke via Podcast Index (2026-07-28)
+**Problem:** "Ubegribeligt" viste 60 poster i app'en som alle var **smagsprøver på 33-40 sek**
+(også de to uden "TEASER:" i titlen). Årsag: app'en henter afsnit fra **Podcast Index**, og PI's
+afsnitsdata for feedet var teasere fra 2025-26 — mens **DR's eget RSS samtidig indeholdt 78 rigtige,
+fulde 57-min-afsnit** (2022-2024). PI's feed-metadata sagde endda `episodeCount: 78`, så det var
+kun PI's *afsnitsliste* der var gal.
+**Fix:** `api/rssfeed.php` + `PODCAST_DIRECT_RSS_HOSTS` (`api.dr.dk`, `dr.dk`) i `podcast_store.php`:
+for DR-feeds parses RSS'et selv (`rss_fetch_episodes`), og PI bruges kun som fallback hvis RSS
+fejler. Ny action **`feed.refreshRss&id=<feedId>`** tvinger en genindlæsning.
+- **Kritisk detalje — bevar `episode_id`:** hørt-tilstand og lytteposition hænger på `episode_id`.
+  Nye id'er ville nulstille alt. `rss_refresh_feed` slår derfor eksisterende afsnit op på
+  **titel+published_at** og genbruger id'et; ellers `rss_stable_id()` = `crc32(guid) & 0x7FFFFFFF`
+  (deterministisk). Verificeret: 2. kørsel gav `reused:78, inserted:0`.
+- **Teaser-oprydning er bevidst konservativ:** der slettes kun cachede afsnit der **både** mangler i
+  RSS'et **og** er **≤120 sek** (`RSS_TEASER_MAX_SEC`). Så ægte gamle afsnit, som et kort RSS ikke
+  når tilbage til, slettes aldrig.
+- **Resultat:** Ubegribeligt 78 ind / 60 teasere ud · Brinkmanns briks 237 ind / **41 teasere ud** ·
+  Sara & Monopolet 254 ind. Lyd verificeret (`audio/mpeg`, 82 MB, HTTP 200 efter 302-redirect).
+- **DR's 2026-sæson er IKKE i noget RSS** — kun i DR Lyd. Se næste afsnit.
+
+## DR Lyd: 2026-sæsonen (undersøgt 2026-07-28)
+DR lægger kun en **40-sek teaser** i det offentlige feed; det fulde afsnit (57 min) ligger i DR Lyd.
+Fx teaser "Nanoteknologi" (40 s, 25/6-2026) ↔ rigtigt afsnit "Nanoteknologi" (**57 min**, samme dato).
+- **Afsnitsdata kan hentes uden login:** show-siden (`https://www.dr.dk/lyd/special-radio/
+  ubegribeligt-3455554599000`) har `__NEXT_DATA__` → `props.pageProps.episodesGroups[].items` med
+  `productionNumber`, `slug`, `durationMilliseconds`, `hasAudioAssets`, `presentationUrl`,
+  `learnId` (25 afsnit i 2026-gruppen).
+- **Lyd-URL kunne IKKE skaffes:** `api.dr.dk/radio/v4/...` giver **401** (kræver `x-apikey`),
+  nøglen er **ikke** i browser-bundlen (DR kalder serverside), ingen mp3/m3u8 i sidens HTML
+  (kun live-radio-streams), og et afspilnings-klik i headless gav ingen asset-URL. **`login.dr.dk`
+  indlæses på siden** → peger på krav om DR-konto. Derfor er 2026-sæsonen realistisk **link-out**,
+  som Podimo — ikke afspilning i app'en.
+
 ## Popularitet / hitlister (2026-07-28)
 **Konklusion på "kan vi vise downloadtal?": NEJ til ægte downloadtal.** De er private hos
 hosting-udbyderen (Podtrac/Acast/Libsyn m.fl.) og udstilles intet offentligt sted. Undersøgt og

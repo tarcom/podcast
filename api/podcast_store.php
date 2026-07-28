@@ -14,15 +14,39 @@ const PODCAST_MAX_REFRESH_PER_CALL = 8; // bound latency: refresh at most N stal
  * Refresh episodes for the given feed from Podcast Index into podcast_episodes, then stamp
  * last_fetched on the favorite row. Best-effort: a feed that errors is left with its old cache.
  */
+/**
+ * Feeds hvor vi læser RSS'et DIREKTE i stedet for at stole på Podcast Index' afsnitsdata.
+ * DR blev tilføjet fordi PI havde 60 smagsprøver (33-40 sek) cachet for "Ubegribeligt",
+ * mens DR's eget feed indeholdt 78 rigtige, fulde afsnit. Matches mod feed_url'ens host.
+ */
+const PODCAST_DIRECT_RSS_HOSTS = ['api.dr.dk', 'www.dr.dk', 'dr.dk'];
+
+function podcast_feed_prefers_rss(?string $feedUrl): bool
+{
+    if (!$feedUrl) {
+        return false;
+    }
+    $host = strtolower((string) parse_url($feedUrl, PHP_URL_HOST));
+    return $host !== '' && in_array($host, PODCAST_DIRECT_RSS_HOSTS, true);
+}
+
 function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $feedId, int $max = 60): void
 {
-    $response = podcastindex_request($config, '/episodes/byfeedid', ['id' => $feedId, 'max' => $max]);
-    $items = is_array($response['items'] ?? null) ? $response['items'] : null;
-
     // Always stamp last_fetched, even on an empty/failed result, so we don't hammer a dead feed
     // on every single load — it just waits for the next stale window.
     $stamp = $pdo->prepare('UPDATE podcast_favorites SET last_fetched = NOW() WHERE device_id = :dev AND feed_id = :feed');
     $stamp->execute(['dev' => $deviceId, 'feed' => $feedId]);
+
+    // DR m.fl.: læs feedet selv. Lykkes det, er vi færdige — ellers falder vi tilbage til PI.
+    $urlQ = $pdo->prepare('SELECT feed_url FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
+    $urlQ->execute(['dev' => $deviceId, 'feed' => $feedId]);
+    $feedUrl = (string) ($urlQ->fetchColumn() ?: '');
+    if (podcast_feed_prefers_rss($feedUrl) && rss_refresh_feed($pdo, $feedId, $feedUrl) !== null) {
+        return;
+    }
+
+    $response = podcastindex_request($config, '/episodes/byfeedid', ['id' => $feedId, 'max' => $max]);
+    $items = is_array($response['items'] ?? null) ? $response['items'] : null;
 
     if ($items === null) {
         return;

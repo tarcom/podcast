@@ -7,6 +7,7 @@ require __DIR__ . '/db.php';
 require __DIR__ . '/podcastindex.php';
 require __DIR__ . '/podcast_store.php';
 require __DIR__ . '/charts.php';
+require __DIR__ . '/rssfeed.php';
 
 $action = $_GET['action'] ?? 'health';
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
@@ -97,6 +98,21 @@ try {
             json_response(['status' => true, 'target' => $target, 'favorites' => $favs, 'states' => $states]);
 
         // --- Podcast Index proxy (discovery) ---
+        // Tving en genindlæsning af ét feeds afsnit direkte fra dets RSS (uden om Podcast Index).
+        // ?action=feed.refreshRss&deviceId=..&id=<feedId>
+        case 'feed.refreshRss':
+            $deviceId = $deviceFromGet();
+            $feedId = (int) ($_GET['id'] ?? 0);
+            $pdo = db($config);
+            $q = $pdo->prepare('SELECT feed_url FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
+            $q->execute(['dev' => $deviceId, 'feed' => $feedId]);
+            $feedUrl = (string) ($q->fetchColumn() ?: '');
+            if ($feedUrl === '') {
+                json_response(['status' => false, 'error' => 'unknown feed for device'], 404);
+            }
+            $res = rss_refresh_feed($pdo, $feedId, $feedUrl);
+            json_response(['status' => $res !== null, 'feedUrl' => $feedUrl] + ($res ?? []));
+
         // Popularitet: Apples danske hitlister (top 50 podcasts + 25 trending afsnit).
         // ?force=1 springer 6-timers cachen over.
         case 'charts':
