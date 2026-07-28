@@ -31,6 +31,16 @@ function fmtDur(sec: number): string {
   const m = Math.round((sec % 3600) / 60)
   return h > 0 ? `${h} t ${m} min` : `${m} min`
 }
+// klokke-format til progress-bar: mm:ss eller t:mm:ss
+function fmtClock(sec: number): string {
+  if (!isFinite(sec) || sec < 0) sec = 0
+  sec = Math.floor(sec)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m)
+  return h > 0 ? `${h}:${mm}:${String(s).padStart(2, '0')}` : `${mm}:${String(s).padStart(2, '0')}`
+}
 function fmtTime(unix: number): string {
   if (!unix) return ''
   return new Date(unix * 1000).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })
@@ -119,6 +129,9 @@ export default function App() {
   const [current, setCurrent] = useState<EpisodeRow | null>(null)
   const [playing, setPlaying] = useState(false)
   const [playErrorId, setPlayErrorId] = useState(0) // afsnit hvis lyd ikke kunne afspilles
+  const [curTime, setCurTime] = useState(0) // sekunder afspillet (til progress bar)
+  const [dur, setDur] = useState(0) // total varighed i sekunder
+  const [seeking, setSeeking] = useState(false) // brugeren trækker i slideren
   const lastSaved = useRef(0)
 
   // ---------- loaders ----------
@@ -237,6 +250,8 @@ export default function App() {
     setPlayErrorId(0)
     setCurrent(ep)
     setPlaying(true)
+    setCurTime(ep.positionSec || 0)
+    setDur(ep.durationSec || 0)
     // resume position applied in the audio onLoadedMetadata handler below
     window.setTimeout(() => {
       const el = audioRef.current
@@ -287,6 +302,8 @@ export default function App() {
   const onTimeUpdate = useCallback(() => {
     const el = audioRef.current
     if (!el || !current) return
+    if (!seeking) setCurTime(el.currentTime)
+    if (el.duration && isFinite(el.duration)) setDur(el.duration)
     const now = Date.now()
     if (now - lastSaved.current > 8000) {
       lastSaved.current = now
@@ -310,6 +327,27 @@ export default function App() {
     }
   }, [])
 
+  // spol: negativ = tilbage, positiv = frem (sekunder)
+  const skip = useCallback((delta: number) => {
+    const el = audioRef.current
+    if (!el) return
+    const target = Math.min(el.duration || Infinity, Math.max(0, el.currentTime + delta))
+    el.currentTime = target
+    setCurTime(target)
+  }, [])
+
+  // slider: opdatér visning mens der trækkes, sæt lyden når man slipper
+  const onSeekInput = useCallback((v: number) => {
+    setSeeking(true)
+    setCurTime(v)
+  }, [])
+  const onSeekCommit = useCallback((v: number) => {
+    const el = audioRef.current
+    if (el) el.currentTime = v
+    setCurTime(v)
+    setSeeking(false)
+  }, [])
+
   // Media Session: metadata + betjening på låseskærm/notifikation (baggrund)
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
@@ -325,11 +363,12 @@ export default function App() {
     }
     ms.setActionHandler('play', () => audioRef.current?.play().then(() => setPlaying(true)).catch(() => {}))
     ms.setActionHandler('pause', () => { audioRef.current?.pause(); setPlaying(false) })
-    ms.setActionHandler('seekbackward', () => { if (audioRef.current) audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 15) })
-    ms.setActionHandler('seekforward', () => { if (audioRef.current) audioRef.current.currentTime += 30 })
+    ms.setActionHandler('seekbackward', () => { if (audioRef.current) { const t = Math.max(0, audioRef.current.currentTime - 10); audioRef.current.currentTime = t; setCurTime(t) } })
+    ms.setActionHandler('seekforward', () => { if (audioRef.current) { const t = audioRef.current.currentTime + 30; audioRef.current.currentTime = t; setCurTime(t) } })
+    try { ms.setActionHandler('seekto', (d) => { const el = audioRef.current; if (el && d.seekTime != null) { el.currentTime = d.seekTime; setCurTime(d.seekTime) } }) } catch { /* ikke understøttet */ }
     ms.setActionHandler('nexttrack', () => onEnded())
     return () => {
-      for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'nexttrack'] as const) {
+      for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'nexttrack'] as const) {
         try { ms.setActionHandler(a, null) } catch { /* ignore */ }
       }
     }
@@ -577,16 +616,41 @@ export default function App() {
           onLoadedMetadata={() => {
             const el = audioRef.current
             if (el && current && current.positionSec && el.currentTime < 1) el.currentTime = current.positionSec
+            if (el && el.duration && isFinite(el.duration)) setDur(el.duration)
           }}
         />
         {current ? (
           <>
-            <button className="play-toggle" onClick={togglePlay}>
-              {playing ? '❚❚' : '▶'}
-            </button>
-            <div className="now">
-              <strong>{current.title}</strong>
-              <span>{current.podcastTitle}</span>
+            <div className="player-bar">
+              <span className="ptime">{fmtClock(curTime)}</span>
+              <input
+                className="pseek"
+                type="range"
+                min={0}
+                max={dur || current.durationSec || 0}
+                step={1}
+                value={Math.min(curTime, dur || current.durationSec || 0)}
+                onChange={(e) => onSeekInput(Number(e.target.value))}
+                onMouseUp={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
+                onTouchEnd={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
+                aria-label="Søg i afsnittet"
+              />
+              <span className="ptime">{fmtClock(dur || current.durationSec || 0)}</span>
+            </div>
+            <div className="player-controls">
+              <button className="skip-btn" onClick={() => skip(-10)} title="Spol 10 sek. tilbage" aria-label="Spol 10 sekunder tilbage">
+                <span className="skip-ico">↺</span><span className="skip-num">10</span>
+              </button>
+              <button className="play-toggle" onClick={togglePlay}>
+                {playing ? '❚❚' : '▶'}
+              </button>
+              <button className="skip-btn" onClick={() => skip(30)} title="Spol 30 sek. frem" aria-label="Spol 30 sekunder frem">
+                <span className="skip-ico">↻</span><span className="skip-num">30</span>
+              </button>
+              <div className="now">
+                <strong>{current.title}</strong>
+                <span>{current.podcastTitle}</span>
+              </div>
             </div>
           </>
         ) : (

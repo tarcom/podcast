@@ -153,12 +153,28 @@ button:disabled { opacity: 0.6; cursor: default; }
 .modal-close { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 18px; cursor: pointer; color: var(--muted); }
 
 /* player */
-.player { position: fixed; left: 0; right: 0; bottom: 0; background: var(--moss-dark); color: #fff; display: flex; align-items: center; gap: 14px; padding: 12px 20px; z-index: 30; }
+.player { position: fixed; left: 0; right: 0; bottom: 0; background: var(--moss-dark); color: #fff; display: flex; flex-direction: column; gap: 8px; padding: 10px 20px calc(10px + env(safe-area-inset-bottom)); z-index: 30; }
 .player .play-toggle { width: 44px; height: 44px; border-radius: 50%; border: none; background: var(--terracotta); color: #fff; font-size: 15px; cursor: pointer; flex-shrink: 0; }
-.player .now { min-width: 0; display: flex; flex-direction: column; }
+.player .now { min-width: 0; display: flex; flex-direction: column; margin-left: 4px; }
 .player .now strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.player .now span { font-size: 12px; opacity: 0.75; }
-.player .now.empty { opacity: 0.6; }
+.player .now span { font-size: 12px; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player .now.empty { opacity: 0.6; padding: 8px 0; }
+
+/* progress bar */
+.player-bar { display: flex; align-items: center; gap: 10px; }
+.player-bar .ptime { font-size: 12px; font-variant-numeric: tabular-nums; opacity: 0.8; flex-shrink: 0; min-width: 40px; text-align: center; }
+.pseek { flex: 1; height: 22px; -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; }
+.pseek::-webkit-slider-runnable-track { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.25); }
+.pseek::-moz-range-track { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.25); }
+.pseek::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--terracotta); margin-top: -6px; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+.pseek::-moz-range-thumb { width: 16px; height: 16px; border: none; border-radius: 50%; background: var(--terracotta); box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+
+/* controls row */
+.player-controls { display: flex; align-items: center; gap: 12px; }
+.skip-btn { position: relative; width: 42px; height: 42px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25); background: transparent; color: #fff; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.skip-btn:active { background: rgba(255,255,255,0.12); }
+.skip-btn .skip-ico { font-size: 24px; line-height: 1; }
+.skip-btn .skip-num { position: absolute; font-size: 10px; font-weight: 700; line-height: 1; }
 
 @media (max-width: 560px) {
   .hero h1 { font-size: 34px; }

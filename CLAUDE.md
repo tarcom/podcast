@@ -56,6 +56,20 @@ er lette at snuble over.
   (`favorites.add` med feeds fra `search`), sæt localStorage i Selenium, reload. Husk at fjerne
   test-favoritterne bagefter (`favorites.remove`).
 
+## Afspiller: progress bar + spol-knapper (2026-07-28)
+- **Player-footeren** (`App.tsx` `<footer className="player">`) er nu **to rækker** (CSS: `.player`
+  er `flex-direction: column`): øverst en **progress bar** (`.player-bar`: `mm:ss` · trækbar
+  `<input type=range class=pseek>` · total `t:mm:ss`), nederst **kontrol-rækken**
+  (`.player-controls`): **↺10 (spol 10 sek. tilbage)**, ▶/❚❚, **↻30 (spol 30 sek. frem)**, titel.
+  Spol-knapperne er til hurtigt at hoppe over reklamer.
+- **State:** `curTime`/`dur`/`seeking` i App. `onTimeUpdate` sætter `curTime` (ikke mens man
+  trækker) + `dur`; `onLoadedMetadata` sætter `dur`; `playEpisode` initialiserer fra
+  `positionSec`/`durationSec`. `skip(delta)` clamper til [0, duration]. Slideren opdaterer visning
+  på `onChange` og sætter `audio.currentTime` først på `onMouseUp`/`onTouchEnd` (`onSeekInput`/
+  `onSeekCommit`) så scrub ikke spammer seeks. `fmtClock()` formaterer sekunder → mm:ss/t:mm:ss.
+- **Media Session** (låseskærm) opdateret til samme 10/30 sek + en `seekto`-handler (træk på
+  notifikationens tidslinje). **SW-cache bumpet `nordpod-v4`→`v5`** (shell-ændring). Deploy: `web`.
+
 ## Podimo-integration (BYGGET 2026-07-27)
 Podimo er paywalled → Podcast Index kender dem ikke, og lyden er DRM-låst (kan ikke afspilles
 in-app). Men **offentlige shows viser afsnitslisten uden login** (ikke alle — nogle er helt
