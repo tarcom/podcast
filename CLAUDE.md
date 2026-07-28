@@ -163,6 +163,22 @@ Fx teaser "Nanoteknologi" (40 s, 25/6-2026) ↔ rigtigt afsnit "Nanoteknologi" (
 - **Kun indeværende år:** serie-siden leverer kun det aktuelle års gruppe udfyldt (øvrige år loades
   først ved klik), hvilket er rigeligt til "hvad er nyt".
 
+## Sonos-afspilning (undersøgt 2026-07-28 — IKKE bygget, bruger sagde "ikke nu")
+Spørgsmål: kan app'en streame til Sonos? **Ja, men aldrig direkte fra browseren.** Tre uafhængige
+blokeringer: (1) **Sonos understøtter ikke Google Cast**, så Chromes cast-knap finder dem aldrig;
+(2) **AirPlay 2** findes på Move 2 + Amp, men kun fra Apple-enheder — Allan er på Pixel;
+(3) app'en kører **HTTPS** og Sonos styres over **HTTP på en lokal IP** → browseren blokerer det som
+mixed content, og Sonos sender heller ingen CORS-headere. Gælder også på eget WiFi.
+**Det der gør det muligt:** Sonos afspiller fint en almindelig **HTTPS-lyd-URL**, og afsnittenes
+`audio_url` er præcis det (verificeret: DR-lyd = `audio/mpeg`, 82 MB, HTTP 200).
+**Skitseret løsning** (samme mønster som deal-radar/Podimo — *HTPC er motoren, aogj.com er
+postkassen*): app → POST "afspil <audio_url> i <rum>" til aogj.com → HTPC poller hvert par sekunder
+→ SOAP `SetAVTransportURI` + `Play` mod `http://<sonos-ip>:1400/MediaRenderer/AVTransport/Control`
+(se det eksisterende `sonos_random_track` shell_command i HA's `configuration.yaml` som SOAP-skabelon).
+Virker også uden for hjemmet. Forsinkelse = polling-intervallet.
+**Forbehold:** Podimo- og DR-link-out-afsnit har **ingen `audio_url`** og kan derfor ikke sendes til
+Sonos. Højttaler-IP'er er DHCP → find dem ved at scanne TCP 1400 (se workspace-`CLAUDE.md`).
+
 ## Popularitet / hitlister (2026-07-28)
 **Konklusion på "kan vi vise downloadtal?": NEJ til ægte downloadtal.** De er private hos
 hosting-udbyderen (Podtrac/Acast/Libsyn m.fl.) og udstilles intet offentligt sted. Undersøgt og
