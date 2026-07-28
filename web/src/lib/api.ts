@@ -137,3 +137,14 @@ export async function setStateMany(
   if (!episodes.length) return
   await client.post('', { deviceId, episodes, played }, { params: { action: 'state.setMany' } })
 }
+
+// --- Popularitet: Apples danske hitlister (top 50 podcasts + 25 trending afsnit) ---
+// Ægte downloadtal er private hos udbyderne og findes ikke offentligt; Apples
+// hitliste er det bedste gratis, danske signal. Serveren cacher i 6 timer.
+export type ChartShow = { rank: number; name: string; artist: string; itunesId: string; artwork: string; url: string; norm: string }
+export type ChartEpisode = { rank: number; name: string; artist: string; artwork: string; norm: string }
+
+export async function getCharts(): Promise<{ shows: ChartShow[]; episodes: ChartEpisode[] }> {
+  const { data } = await client.get('', { params: { action: 'charts' } })
+  return { shows: data.shows || [], episodes: data.episodes || [] }
+}

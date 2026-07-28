@@ -112,6 +112,33 @@ er lette at snuble over.
   kolonne og returnerer `columnsAdded`. Kør den efter skemaændringer. (Her returnerede den `[]` =
   `updated_at` fandtes allerede.)
 
+## Popularitet / hitlister (2026-07-28)
+**Konklusion på "kan vi vise downloadtal?": NEJ til ægte downloadtal.** De er private hos
+hosting-udbyderen (Podtrac/Acast/Libsyn m.fl.) og udstilles intet offentligt sted. Undersøgt og
+afvist: **Podcast Index har INGEN popularitetsfelter** (feed-objektet har kun `priority` =
+crawl-prioritet, ikke popularitet — verificeret på et rigtigt feed). **Spotify** har *ingen*
+`popularity` på episode-objektet og kræver bruger-OAuth → droppet.
+**Valgt løsning: Apples danske hitlister** — gratis, ingen API-nøgle, dansk:
+- `https://rss.marketingtools.apple.com/api/v2/dk/podcasts/top/50/podcasts.json` → **top 50 podcasts**
+  (max er 50; `top/100` og `/200` fejler). Felter: `name`, `artistName`, `id` (= iTunes-id), `artworkUrl100`.
+- `.../top/25/podcast-episodes.json` → **"Trending Episodes"**, 25 afsnit. **NB:** listen har
+  **hverken `collectionId` eller `collectionName`** (kun `name` + `artistName`), så afsnit kan
+  **kun matches på titel**.
+- **Backend `api/charts.php`** + action **`charts`** (`?force=1` forbigår cache). Cacher i tabellen
+  `podcast_chart_cache` i **6 timer** (Apple opdaterer ~dagligt). Falder tilbage til **stale cache**
+  hvis Apple er nede — hellere gamle tal end ingen.
+- **Matchning:** `chart_norm()` (PHP) og `chartNorm()` (App.tsx) **skal holdes identiske** —
+  lowercase, fjern emoji + tegnsætning, kollaps whitespace. Serveren sender en færdig `norm`-nøgle.
+  Podcasts matches på iTunes-id hvis kendt, ellers normaliseret titel (vi gemmer p.t. ikke
+  `itunes_id` på favoritter — titel-match er nok i praksis).
+- **UI:** 🔥 `#N i DK`-chip (`.hot`) på afsnit i køen; `#N i DK`-chip (`.rank`) på podcast-kort
+  (Favoritter + Udforsk); og **"🇩🇰 Mest populære i Danmark lige nu"** — hele top-50-listen i
+  **Udforsk** (klik = søg podcasten frem i Podcast Index så den kan følges). Hitlisten er bevidst
+  **fejl-tolerant**: slår `getCharts()` fejl, vises intet, og resten af app'en er upåvirket.
+- **Realistisk dækning:** kun 3 af Allans 22 favoritter lå i top-50, og 3 afsnit i køen var trending.
+  Det er forventet — det er et *highlight*, ikke et tal på alt. Der findes ingen gratis kilde til
+  et popularitetstal for **enhver** podcast (Listen Notes' "Listen Score" kræver betalt API-nøgle).
+
 ## Castbox-feature-vurdering (2026-07-28)
 Allan bruger til dagligt **Castbox**; vi gennemgik dens features. **Besluttet/bygget:** spol ±10/30,
 fremdrift i kø, Fortsætter-sektion. **Fravalgt indtil videre:** offline download (se nedenfor).

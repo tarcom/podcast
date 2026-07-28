@@ -6,6 +6,7 @@ require __DIR__ . '/bootstrap.php';
 require __DIR__ . '/db.php';
 require __DIR__ . '/podcastindex.php';
 require __DIR__ . '/podcast_store.php';
+require __DIR__ . '/charts.php';
 
 $action = $_GET['action'] ?? 'health';
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
@@ -96,6 +97,13 @@ try {
             json_response(['status' => true, 'target' => $target, 'favorites' => $favs, 'states' => $states]);
 
         // --- Podcast Index proxy (discovery) ---
+        // Popularitet: Apples danske hitlister (top 50 podcasts + 25 trending afsnit).
+        // ?force=1 springer 6-timers cachen over.
+        case 'charts':
+            $pdo = db($config);
+            $data = chart_get($pdo, !empty($_GET['force']));
+            json_response(['status' => true] + $data);
+
         case 'discover':
             $max = isset($_GET['max']) ? max(1, min(100, (int) $_GET['max'])) : 60;
             $lang = isset($_GET['lang']) ? trim((string) $_GET['lang']) : 'da';

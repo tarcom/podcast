@@ -4,6 +4,7 @@ import {
   addPodimoShow,
   discover,
   feedEpisodes,
+  getCharts,
   getPodcast,
   listFavorites,
   newestEpisodes,
@@ -14,6 +15,7 @@ import {
   setStateMany,
 } from './lib/api'
 import { getDeviceId } from './lib/device'
+import type { ChartEpisode, ChartShow } from './lib/api'
 import type { EpisodeRow, Favorite, Podcast } from './types'
 
 type Tab = 'explore' | 'favorites' | 'queue'
@@ -31,6 +33,18 @@ function fmtDur(sec: number): string {
   const m = Math.round((sec % 3600) / 60)
   return h > 0 ? `${h} t ${m} min` : `${m} min`
 }
+// Normalisér en titel til hitliste-matchning. SKAL matche chart_norm() i api/charts.php,
+// ellers rammer vi aldrig et match (Apple skriver fx emoji og tegnsætning anderledes).
+function chartNorm(sx: string): string {
+  return sx
+    .toLowerCase()
+    .trim()
+    .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+}
+
 // "i gang med": mere end 30 sek. inde, men ikke stort set færdig. Bruges både af
 // Fortsætter-sektionen og af fremdriftsbjælken, så de aldrig kan komme ud af trit.
 function isInProgress(pos: number, total: number, heard: boolean): boolean {
@@ -129,6 +143,10 @@ export default function App() {
   // episode detail ("læs mere")
   const [openEpisode, setOpenEpisode] = useState<EpisodeRow | null>(null)
 
+  // popularitet (Apples danske hitlister)
+  const [chartShows, setChartShows] = useState<ChartShow[]>([])
+  const [chartEpisodes, setChartEpisodes] = useState<ChartEpisode[]>([])
+
   // player
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [current, setCurrent] = useState<EpisodeRow | null>(null)
@@ -157,6 +175,13 @@ export default function App() {
     loadFavorites()
     loadQueue()
     discover('da', 60).then(setResults).catch(() => {})
+    // popularitet er pynt — fejler den, skal resten af app'en være upåvirket
+    getCharts()
+      .then((c) => {
+        setChartShows(c.shows)
+        setChartEpisodes(c.episodes)
+      })
+      .catch(() => {})
   }, [loadFavorites, loadQueue])
 
   // ---------- explore ----------
@@ -385,6 +410,35 @@ export default function App() {
     }
   }, [current, onEnded])
 
+  // Hitliste-opslag: normaliseret titel -> placering. Apple giver ingen fælles id'er
+  // på afsnits-listen (kun navn + vært), så titel er det eneste vi kan matche på.
+  const showRankByName = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const s2 of chartShows) m.set(s2.norm, s2.rank)
+    return m
+  }, [chartShows])
+  const showRankByItunes = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const s2 of chartShows) if (s2.itunesId) m.set(s2.itunesId, s2.rank)
+    return m
+  }, [chartShows])
+  const episodeRankByName = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const e of chartEpisodes) m.set(e.norm, e.rank)
+    return m
+  }, [chartEpisodes])
+
+  const rankForPodcast = useCallback(
+    (title?: string, itunesId?: string) =>
+      (itunesId ? showRankByItunes.get(itunesId) : undefined) ??
+      (title ? showRankByName.get(chartNorm(title)) : undefined),
+    [showRankByItunes, showRankByName],
+  )
+  const rankForEpisode = useCallback(
+    (title?: string) => (title ? episodeRankByName.get(chartNorm(title)) : undefined),
+    [episodeRankByName],
+  )
+
   const unheardCount = queue.filter((e) => !e.playedAt).length
 
   // "Fortsætter": afsnit man er midt i, senest lyttede først.
@@ -449,12 +503,49 @@ export default function App() {
           </div>
           {exploreErr && <p className="error">{exploreErr}</p>}
 
+          {chartShows.length > 0 && (
+            <div className="charts">
+              <div className="charts-head">
+                <h3>🇩🇰 Mest populære i Danmark lige nu</h3>
+                <span className="muted">Apples top 50 · opdateres dagligt</span>
+              </div>
+              <ol className="chartlist">
+                {chartShows.map((s2) => (
+                  <li key={s2.itunesId || s2.rank}>
+                    <button
+                      className="chart-item"
+                      onClick={() => {
+                        // slå op i Podcast Index på titlen, så den kan åbnes/følges som alle andre
+                        setQuery(s2.name)
+                        setTab('explore')
+                        setExploreBusy(true)
+                        search(s2.name, 20)
+                          .then(setResults)
+                          .catch(() => setExploreErr('Kunne ikke slå podcasten op.'))
+                          .finally(() => setExploreBusy(false))
+                      }}
+                      title={`Nr. ${s2.rank} i Danmark — tryk for at finde den`}
+                    >
+                      <span className="chart-rank">{s2.rank}</span>
+                      {s2.artwork ? <img src={s2.artwork} alt="" loading="lazy" /> : <span className="noimg" />}
+                      <span className="chart-text">
+                        <strong>{s2.name}</strong>
+                        <span>{s2.artist}</span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
           <div className="grid">
             {orderedResults.map((p) => (
               <PodcastCard
                 key={p.id}
                 podcast={p}
                 starred={favIds.has(p.id)}
+                chartRank={rankForPodcast(p.title)}
                 onStar={() => toggleFavorite(p)}
                 onOpen={() => openDetail(p)}
               />
@@ -472,6 +563,7 @@ export default function App() {
                 key={f.feedId}
                 podcast={{ id: f.feedId, title: f.title, image: f.image, author: f.author, language: f.language }}
                 starred
+                chartRank={rankForPodcast(f.title)}
                 onStar={() => toggleFavorite({ id: f.feedId, title: f.title, image: f.image, author: f.author, language: f.language })}
                 onOpen={() => openDetail(f)}
               />
@@ -503,6 +595,7 @@ export default function App() {
                     ep={ep}
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
+                    chartRank={rankForEpisode(ep.title)}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
@@ -531,6 +624,7 @@ export default function App() {
                     ep={ep}
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
+                    chartRank={rankForEpisode(ep.title)}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
@@ -577,6 +671,7 @@ export default function App() {
                     ep={ep}
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
+                    chartRank={rankForEpisode(ep.title)}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
@@ -704,11 +799,13 @@ export default function App() {
 function PodcastCard({
   podcast,
   starred,
+  chartRank,
   onStar,
   onOpen,
 }: {
   podcast: Podcast
   starred: boolean
+  chartRank?: number // placering på Apples top-50 i Danmark
   onStar: () => void
   onOpen: () => void
 }) {
@@ -719,7 +816,14 @@ function PodcastCard({
         <div className="card-text">
           <strong>{podcast.title}</strong>
           <span>{podcast.author}</span>
-          {isDanish(podcast.language) && <em className="da">Dansk</em>}
+          <span className="card-tags">
+            {chartRank && (
+              <em className="rank" title={`Nr. ${chartRank} på Apples top-50 i Danmark`}>
+                #{chartRank} i DK
+              </em>
+            )}
+            {isDanish(podcast.language) && <em className="da">Dansk</em>}
+          </span>
         </div>
       </button>
       <button className={`star ${starred ? 'on' : ''}`} onClick={onStar} title={starred ? 'Fjern favorit' : 'Tilføj favorit'}>
@@ -733,6 +837,7 @@ function EpisodeItem({
   ep,
   isCurrent,
   liveTime,
+  chartRank,
   onPlay,
   onToggleHeard,
   onInfo,
@@ -740,6 +845,7 @@ function EpisodeItem({
   ep: EpisodeRow
   isCurrent: boolean
   liveTime?: number // sekunder for det afsnit der spiller lige nu (så bjælken bevæger sig)
+  chartRank?: number // placering på Apples danske trending-afsnit-liste
   onPlay: () => void
   onToggleHeard: () => void
   onInfo: () => void
@@ -771,6 +877,11 @@ function EpisodeItem({
       <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
         <span className="ep-meta">
+          {chartRank && (
+            <em className="hot" title={`Nr. ${chartRank} på Apples trending-afsnit i Danmark lige nu`}>
+              🔥 #{chartRank} i DK
+            </em>
+          )}
           {source && <em className={`src src-${source.toLowerCase()}`}>{source}</em>}
           {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
           {fmtDate(ep.publishedAt)}
