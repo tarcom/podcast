@@ -3,23 +3,32 @@
 declare(strict_types=1);
 
 /**
- * Direkte RSS-læsning — bruges når Podcast Index' afsnitsdata er forkerte/forældede.
+ * Direkte RSS-læsning — den primære kilde til afsnit (Podcast Index er fallback).
  *
- * Konkret anledning (2026-07-28): DR's "Ubegribeligt" lå i app'en som 60 smagsprøver på
+ * Første anledning (2026-07-28): DR's "Ubegribeligt" lå i app'en som 60 smagsprøver på
  * 33-40 sek, fordi Podcast Index havde teasere cachet for feedet. DR's eget RSS indeholdt
- * samtidig 78 rigtige, fulde afsnit. Vi læser derfor feedet selv for DR.
+ * samtidig 78 rigtige, fulde afsnit.
+ * Anden anledning (2026-07-29): "Store Penge" (+ Børsen investor, Sådan investerer jeg) manglede
+ * afsnit i op til 7 dage. Årsag: Podcast Index er en **crawler** og kan sakke bagud — feedets eget
+ * RSS havde afsnittene hele tiden. Derfor læses RSS'et nu direkte for ALLE feeds der har et
+ * `feed_url`; PI bruges kun hvis RSS-hentningen fejler.
  *
- * To ting er vigtige her:
+ * Tre ting er vigtige her:
  *  1) **Bevar eksisterende episode_id.** Hørt-tilstand og lytteposition hænger på
  *     `episode_id`. Ville vi bare finde på nye id'er, mistede Allan alt det.
- *     Derfor genbruges id'et fra et allerede gemt afsnit med samme titel+dato.
- *  2) **Slet kun teasere.** Når et DR-feed genindlæses fra RSS, ryddes kun de cachede
+ *     Derfor genbruges id'et fra et allerede gemt afsnit — først matchet på `audio_url`
+ *     (den mest stabile nøgle), ellers på titel+dato.
+ *  2) **Slet kun teasere.** Når et feed genindlæses fra RSS, ryddes kun de cachede
  *     afsnit der (a) ikke findes i RSS'et OG (b) er under 2 min. Så forsvinder
  *     smagsprøverne, mens ægte gamle afsnit (som RSS'et måske ikke rækker tilbage til)
  *     aldrig slettes.
+ *  3) **Kun de nyeste N afsnit importeres** (`$max`, default = samme 60 som PI leverede).
+ *     Et RSS kan have 300-400 afsnit; tog vi dem alle, ville køen (som viser uhørte) blive
+ *     oversvømmet af flere hundrede gamle afsnit — og hver refresh blive unødigt tung.
  */
 
 const RSS_TEASER_MAX_SEC = 120; // kortere end dette + ikke i feedet = smagsprøve
+const RSS_MAX_EPISODES = 60;    // samme dybde som Podcast Index leverede — se punkt 3 ovenfor
 
 /** "PT1H2M3S" / "1:02:03" / "3600" -> sekunder */
 function rss_duration_to_sec(string $v): int
@@ -44,8 +53,11 @@ function rss_stable_id(string $key): int
     return (int) (crc32($key) & 0x7FFFFFFF);
 }
 
-/** Hent og parse et RSS-feed til en liste af afsnit. Returnerer null ved fejl. */
-function rss_fetch_episodes(string $feedUrl): ?array
+/**
+ * Hent og parse et RSS-feed til en liste af afsnit, nyeste først.
+ * `$max` > 0 begrænser til de nyeste N. Returnerer null ved fejl.
+ */
+function rss_fetch_episodes(string $feedUrl, int $max = 0): ?array
 {
     $ch = curl_init($feedUrl);
     curl_setopt_array($ch, [
@@ -106,6 +118,13 @@ function rss_fetch_episodes(string $feedUrl): ?array
         ];
     }
 
+    // Nyeste først — de fleste feeds er allerede sorteret, men vi kan ikke regne med det,
+    // og $max skal skære de ÆLDSTE væk, ikke bare halen af filen.
+    usort($out, static fn (array $a, array $b): int => $b['published_at'] <=> $a['published_at']);
+    if ($max > 0 && count($out) > $max) {
+        $out = array_slice($out, 0, $max);
+    }
+
     return $out;
 }
 
@@ -113,20 +132,28 @@ function rss_fetch_episodes(string $feedUrl): ?array
  * Genindlæs ét feeds afsnit fra dets RSS.
  * Returnerer ['inserted'=>n,'reused'=>n,'removedTeasers'=>n] eller null hvis feedet ikke kunne hentes.
  */
-function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTeasers = true): ?array
+function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTeasers = true, int $max = RSS_MAX_EPISODES): ?array
 {
-    $eps = rss_fetch_episodes($feedUrl);
+    $eps = rss_fetch_episodes($feedUrl, $max);
     if ($eps === null || !$eps) {
         return null;
     }
 
-    // Eksisterende afsnit: titel+dato -> episode_id, så id'er (og dermed hørt-tilstand) bevares.
-    $existing = [];
-    $q = $pdo->prepare('SELECT episode_id, title, published_at, duration_sec FROM podcast_episodes WHERE feed_id = :f');
+    // Eksisterende afsnit -> episode_id, så id'er (og dermed hørt-tilstand) bevares.
+    // audio_url er den stabile nøgle: PI gemte præcis feedets enclosure-URL, så et feed der
+    // skifter fra PI til RSS genkender alt. Titel+dato er fallback for feeds hvor lyd-URL'en
+    // indeholder et per-kald-token (fx art19's `?rss_browser=`).
+    $byAudio = [];
+    $byTitleDate = [];
+    $q = $pdo->prepare('SELECT episode_id, title, published_at, duration_sec, audio_url FROM podcast_episodes WHERE feed_id = :f');
     $q->execute(['f' => $feedId]);
     $rows = $q->fetchAll();
     foreach ($rows as $r) {
-        $existing[mb_strtolower(trim((string) $r['title'])) . '|' . (int) $r['published_at']] = (int) $r['episode_id'];
+        $audio = trim((string) ($r['audio_url'] ?? ''));
+        if ($audio !== '') {
+            $byAudio[$audio] = (int) $r['episode_id'];
+        }
+        $byTitleDate[mb_strtolower(trim((string) $r['title'])) . '|' . (int) $r['published_at']] = (int) $r['episode_id'];
     }
 
     $upsert = $pdo->prepare(
@@ -142,16 +169,22 @@ function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTea
     $seen = [];
     $inserted = 0;
     $reused = 0;
+    $oldestKept = PHP_INT_MAX;
     foreach ($eps as $e) {
+        $audio = trim((string) ($e['audio_url'] ?? ''));
         $key = mb_strtolower(trim((string) $e['title'])) . '|' . (int) $e['published_at'];
-        if (isset($existing[$key])) {
-            $epId = $existing[$key];
+        if ($audio !== '' && isset($byAudio[$audio])) {
+            $epId = $byAudio[$audio];
+            $reused++;
+        } elseif (isset($byTitleDate[$key])) {
+            $epId = $byTitleDate[$key];
             $reused++;
         } else {
             $epId = rss_stable_id((string) $e['guid']);
             $inserted++;
         }
         $seen[$epId] = true;
+        $oldestKept = min($oldestKept, (int) $e['published_at']);
         $upsert->execute([
             'feed' => $feedId,
             'ep' => $epId,
@@ -166,11 +199,13 @@ function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTea
     }
 
     // Ryd smagsprøver: kun det der IKKE er i feedet og er kortere end 2 min.
+    // Og kun inden for det vindue vi rent faktisk har læst ($max skærer halen af feedet væk,
+    // så alt ældre end det ældste importerede afsnit er "ukendt", ikke "fjernet fra feedet").
     $removed = 0;
     if ($pruneTeasers) {
         foreach ($rows as $r) {
             $epId = (int) $r['episode_id'];
-            if (isset($seen[$epId])) {
+            if (isset($seen[$epId]) || (int) $r['published_at'] < $oldestKept) {
                 continue;
             }
             if ((int) $r['duration_sec'] > 0 && (int) $r['duration_sec'] <= RSS_TEASER_MAX_SEC) {

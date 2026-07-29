@@ -15,19 +15,38 @@ const PODCAST_MAX_REFRESH_PER_CALL = 8; // bound latency: refresh at most N stal
  * last_fetched on the favorite row. Best-effort: a feed that errors is left with its old cache.
  */
 /**
- * Feeds hvor vi læser RSS'et DIREKTE i stedet for at stole på Podcast Index' afsnitsdata.
- * DR blev tilføjet fordi PI havde 60 smagsprøver (33-40 sek) cachet for "Ubegribeligt",
- * mens DR's eget feed indeholdt 78 rigtige, fulde afsnit. Matches mod feed_url'ens host.
+ * RSS er den PRIMÆRE kilde til afsnit; Podcast Index er fallback.
+ *
+ * Baggrund: PI er en crawler, og den kan både have FORKERTE afsnit (DR's "Ubegribeligt" lå som
+ * 60 smagsprøver på 33-40 sek, mens DR's eget feed havde 78 fulde afsnit — 2026-07-28) og være
+ * FOR LANGSOM (2026-07-29: "Store Penge" manglede afsnittet fra 28/7, "Børsen investor" og
+ * "Sådan investerer jeg" var 7 dage bagud — feedenes eget RSS havde dem hele tiden).
+ * Vi læser derfor feedet selv når vi kender dets `feed_url`, og bruger kun PI hvis det fejler.
  */
-const PODCAST_DIRECT_RSS_HOSTS = ['api.dr.dk', 'www.dr.dk', 'dr.dk'];
-
 function podcast_feed_prefers_rss(?string $feedUrl): bool
 {
     if (!$feedUrl) {
         return false;
     }
-    $host = strtolower((string) parse_url($feedUrl, PHP_URL_HOST));
-    return $host !== '' && in_array($host, PODCAST_DIRECT_RSS_HOSTS, true);
+    $scheme = strtolower((string) parse_url($feedUrl, PHP_URL_SCHEME));
+    $host = (string) parse_url($feedUrl, PHP_URL_HOST);
+    return $host !== '' && in_array($scheme, ['http', 'https'], true);
+}
+
+/**
+ * Nogle favoritter blev gemt uden feed_url (frontenden sendte den ikke med dengang), og uden
+ * den kan vi ikke læse RSS. Hent den fra Podcast Index én gang og gem den på favoritten.
+ */
+function podcast_backfill_feed_url(array $config, PDO $pdo, string $deviceId, int $feedId): string
+{
+    $response = podcastindex_request($config, '/podcasts/byfeedid', ['id' => $feedId]);
+    $url = trim((string) ($response['feed']['url'] ?? ''));
+    if ($url === '') {
+        return '';
+    }
+    $pdo->prepare('UPDATE podcast_favorites SET feed_url = :url WHERE device_id = :dev AND feed_id = :feed')
+        ->execute(['url' => $url, 'dev' => $deviceId, 'feed' => $feedId]);
+    return $url;
 }
 
 function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $feedId, int $max = 60): void
@@ -37,11 +56,20 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
     $stamp = $pdo->prepare('UPDATE podcast_favorites SET last_fetched = NOW() WHERE device_id = :dev AND feed_id = :feed');
     $stamp->execute(['dev' => $deviceId, 'feed' => $feedId]);
 
-    // DR m.fl.: læs feedet selv. Lykkes det, er vi færdige — ellers falder vi tilbage til PI.
-    $urlQ = $pdo->prepare('SELECT feed_url FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
+    // Læs feedet selv. Lykkes det, er vi færdige — ellers falder vi tilbage til PI.
+    $urlQ = $pdo->prepare('SELECT feed_url, added_via FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
     $urlQ->execute(['dev' => $deviceId, 'feed' => $feedId]);
-    $feedUrl = (string) ($urlQ->fetchColumn() ?: '');
-    if (podcast_feed_prefers_rss($feedUrl) && rss_refresh_feed($pdo, $feedId, $feedUrl) !== null) {
+    $fav = $urlQ->fetch() ?: [];
+    // Podimo-shows fyldes af HTPC-scraperen (podimo.ingest) — deres feed_url er en HTML-showside,
+    // ikke et RSS, og PI kender dem slet ikke. Rør dem ikke.
+    if (($fav['added_via'] ?? '') === 'podimo') {
+        return;
+    }
+    $feedUrl = trim((string) ($fav['feed_url'] ?? ''));
+    if ($feedUrl === '') {
+        $feedUrl = podcast_backfill_feed_url($config, $pdo, $deviceId, $feedId);
+    }
+    if (podcast_feed_prefers_rss($feedUrl) && rss_refresh_feed($pdo, $feedId, $feedUrl, true, $max) !== null) {
         return;
     }
 

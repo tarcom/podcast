@@ -112,6 +112,47 @@ er lette at snuble over.
   kolonne og returnerer `columnsAdded`. Kør den efter skemaændringer. (Her returnerede den `[]` =
   `updated_at` fandtes allerede.)
 
+## RSS er nu PRIMÆR kilde for ALLE feeds (2026-07-29)
+**Problem:** "Store Penge" havde et nyt afsnit (28/7) i Castbox, men ikke i app'en. **Årsag: ikke en
+bug i app'en — Podcast Index sakker bagud.** PI er en *crawler*; `/episodes/byfeedid` for feedet
+returnerede stadig 23/7 som nyeste, mens feedets eget RSS havde 28/7-afsnittet. En sammenligning af
+alle 19 rigtige favoritter (cache vs. RSS) viste **3 feeds bagud**: Store Penge (5 dage),
+**Børsen investor** og **Sådan investerer jeg** (7 dage). Resten var ajour — så det er sporadisk
+crawl-lag, ikke systematisk nedbrud.
+**Fix:** DR-allowlisten (`PODCAST_DIRECT_RSS_HOSTS`) er droppet. `podcast_feed_prefers_rss()`
+returnerer nu true for **ethvert http(s) `feed_url`** → alle feeds læses direkte fra RSS, og
+**Podcast Index bruges kun som fallback** hvis RSS-hentningen fejler (og til søgning/opdagelse,
+som før). Sammen med den eksisterende DR-erfaring er reglen nu: *PI finder podcasts, RSS leverer
+afsnit.*
+- **`RSS_MAX_EPISODES = 60`** (ny) — kun de nyeste 60 importeres, samme dybde som PI leverede.
+  **Vigtigt hvorfor:** feedene har 300-400 afsnit (Investeringspodcasten 427, Store Penge 312);
+  tog vi dem alle, ville **køen** (som viser *uhørte*) blive oversvømmet af flere hundrede gamle
+  afsnit. `rss_fetch_episodes()` sorterer derfor nyeste-først **før** den skærer (feeds kan ikke
+  antages sorteret).
+- **Teaser-prune er nu vindue-begrænset:** kun cachede afsnit **nyere end det ældste importerede**
+  kan slettes. Ellers ville `$max`-afkortningen få gamle afsnit til at ligne "fjernet fra feedet".
+- **episode_id bevares nu via `audio_url` først, titel+dato som fallback.** Hørt-tilstand hænger på
+  `episode_id`, så id-churn = alt Allan har hørt dukker op igen som uhørt. `audio_url` er den
+  stabile nøgle (PI gemte præcis feedets enclosure-URL). **Titel+dato-fallbacken er ikke pynt:**
+  **art19**-feeds (`Casper 3080 Tikøb`, `Casper ringer til Frank`) hænger et per-kald-token på
+  lyd-URL'en (`?rss_browser=BAhJIg` vs. `BAhJIh`), så audio-match giver 0 der — titel+dato reddede
+  alle 10 afsnit.
+- **Verificeret med en tør-kørsel FØR deploy** (hent RSS + app-cache for hver favorit og simulér
+  matchningen): forudsagde 8 nye afsnit og **0 id-churn**. Live-resultatet blev **7 inserted /
+  846 reused / 0 mistede id'er**. Gør det samme igen ved fremtidige ændringer i id-matchningen.
+- **`feed_url` backfilles** (`podcast_backfill_feed_url`): nogle gamle favoritter blev gemt uden
+  (fx `Genstart`), og uden den kan RSS ikke læses. Hentes fra PI's `/podcasts/byfeedid` én gang og
+  gemmes på favoritten.
+- **Podimo-favoritter springes eksplicit over** i `podcast_refresh_feed` (deres `feed_url` er en
+  HTML-showside, ikke et RSS — de fyldes af HTPC-scraperen). Før virkede det ved et tilfælde fordi
+  allowlisten kun matchede DR.
+- **Ydelse målt:** alle 19 feeds hentet+parset på **3,8 s** i alt (max 8 pr. request → ~1,5 s).
+  Ingen grund til at ændre `PODCAST_STALE_SECONDS` (30 min).
+- **Tør-kørsel-faldgrube (Python):** `email.utils.parsedate_to_datetime` behandler RFC-2822-`-0000`
+  som *naiv* tid, så `.timestamp()` fortolker den i lokal tid → alle art19-datoer var 2 timer
+  forkerte og "matchede ikke". PHP's `strtotime` gør det rigtigt. Sæt `tzinfo=utc` når du
+  simulerer serverens datoer i Python.
+
 ## DR: læs RSS DIREKTE, ikke via Podcast Index (2026-07-28)
 **Problem:** "Ubegribeligt" viste 60 poster i app'en som alle var **smagsprøver på 33-40 sek**
 (også de to uden "TEASER:" i titlen). Årsag: app'en henter afsnit fra **Podcast Index**, og PI's

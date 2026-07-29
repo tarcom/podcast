@@ -5,3 +5,4 @@ api/config.php
 scraper/.venv/
 scraper/scrape.log
 scraper/__pycache__/
+scraper/*.log
