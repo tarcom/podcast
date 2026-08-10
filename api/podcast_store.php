@@ -49,7 +49,11 @@ function podcast_backfill_feed_url(array $config, PDO $pdo, string $deviceId, in
     return $url;
 }
 
-function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $feedId, int $max = 60): void
+/**
+ * @return int Antal NYE afsnit lagt i cachen (0 = intet ændret). Bruges af `episodes.refresh`
+ *             til at fortælle frontenden om det overhovedet kan betale sig at hente køen igen.
+ */
+function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $feedId, int $max = 60): int
 {
     // Always stamp last_fetched, even on an empty/failed result, so we don't hammer a dead feed
     // on every single load — it just waits for the next stale window.
@@ -63,21 +67,24 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
     // Podimo-shows fyldes af HTPC-scraperen (podimo.ingest) — deres feed_url er en HTML-showside,
     // ikke et RSS, og PI kender dem slet ikke. Rør dem ikke.
     if (($fav['added_via'] ?? '') === 'podimo') {
-        return;
+        return 0;
     }
     $feedUrl = trim((string) ($fav['feed_url'] ?? ''));
     if ($feedUrl === '') {
         $feedUrl = podcast_backfill_feed_url($config, $pdo, $deviceId, $feedId);
     }
-    if (podcast_feed_prefers_rss($feedUrl) && rss_refresh_feed($pdo, $feedId, $feedUrl, true, $max) !== null) {
-        return;
+    if (podcast_feed_prefers_rss($feedUrl)) {
+        $res = rss_refresh_feed($pdo, $feedId, $feedUrl, true, $max);
+        if ($res !== null) {
+            return (int) ($res['inserted'] ?? 0) + (int) ($res['removedTeasers'] ?? 0);
+        }
     }
 
     $response = podcastindex_request($config, '/episodes/byfeedid', ['id' => $feedId, 'max' => $max]);
     $items = is_array($response['items'] ?? null) ? $response['items'] : null;
 
     if ($items === null) {
-        return;
+        return 0;
     }
 
     $upsert = $pdo->prepare(
@@ -90,6 +97,7 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
             duration_sec = VALUES(duration_sec)'
     );
 
+    $inserted = 0;
     foreach ($items as $ep) {
         if (!is_array($ep) || !isset($ep['id'])) {
             continue;
@@ -106,14 +114,28 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
             'image' => trim((string) ($ep['image'] ?? '')) ?: null,
             'dur'   => max(0, (int) ($ep['duration'] ?? 0)),
         ]);
+        // ON DUPLICATE KEY UPDATE: rowCount() er 1 ved INSERT, 2 ved UPDATE, 0 hvis uændret.
+        if ($upsert->rowCount() === 1) {
+            $inserted++;
+        }
     }
+
+    return $inserted;
 }
 
 /**
  * Refresh any of the device's favorites whose episodes are stale (or never fetched), capped so
  * a first load with many favorites doesn't block — the rest refresh on the following loads.
+ *
+ * VIGTIGT (2026-08-10): dette kaldes IKKE længere fra `episodes.newest`. Hver stale favorit
+ * koster en RSS-hentning over nettet (målt 0,15-0,38 sek. pr. feed), så med loftet på 8 feeds
+ * ventede kø-svaret 1-3 sekunder på netværket FØR det sendte den cache vi allerede havde —
+ * det var kilden til "Alt er hørt" der blinkede forbi, inden indholdet kom. Refresh'en har nu
+ * sit eget endpoint (`episodes.refresh`), som frontenden kalder EFTER den har tegnet cachen.
+ *
+ * @return array{feeds:int,inserted:int} feeds = antal opdaterede feeds, inserted = nye afsnit.
  */
-function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $deviceId): void
+function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $deviceId): array
 {
     $stmt = $pdo->prepare(
         'SELECT feed_id FROM podcast_favorites
@@ -129,15 +151,25 @@ function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $device
     $stmt->execute();
     $feedIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
+    $inserted = 0;
     foreach ($feedIds as $feedId) {
-        podcast_refresh_feed($config, $pdo, $deviceId, (int) $feedId);
+        $inserted += podcast_refresh_feed($config, $pdo, $deviceId, (int) $feedId);
     }
+
+    return ['feeds' => count($feedIds), 'inserted' => $inserted];
 }
 
-/** Episodes across all of the device's favorites, newest first, with per-device played/position state. */
-function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200): array
+/**
+ * Episodes across all of the device's favorites, newest first, with per-device played/position state.
+ *
+ * Køen viser kun UHØRTE afsnit, men hentede før alle 200 nyeste og smed de hørte væk i browseren:
+ * målt 2026-08-10 var 132 af 200 rækker hørte = 201 KB af en 298 KB payload sendt til ingen nytte.
+ * `$unheardOnly` skærer dem fra i en ydre forespørgsel, så vinduet stadig er "de 200 nyeste
+ * afsnit" (ikke "de 200 nyeste uhørte") — ellers ville ældre afsnit pludselig dukke op i køen.
+ */
+function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200, bool $unheardOnly = true): array
 {
-    $stmt = $pdo->prepare(
+    $inner =
         'SELECT e.feed_id, e.episode_id, e.title, e.description, e.published_at, e.audio_url,
                 e.link_url, e.image, e.duration_sec,
                 f.title AS podcast_title, f.image AS podcast_image,
@@ -146,8 +178,16 @@ function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200): 
          JOIN podcast_favorites f ON f.feed_id = e.feed_id AND f.device_id = :dev
          LEFT JOIN podcast_episode_state st ON st.device_id = :dev AND st.episode_id = e.episode_id
          ORDER BY e.published_at DESC
-         LIMIT ' . (int) $limit
-    );
+         LIMIT ' . (int) $limit;
+
+    // FÆLDE: den ydre forespørgsel SKAL sortere igen. MariaDB bruger kun den indre `ORDER BY` til
+    // at afgøre hvilke rækker `LIMIT` beholder — rækkefølgen ud af en afledt tabel er udefineret,
+    // og køen kom faktisk blandet ud (9 brud på 65 rækker), så dag-grupperne gentog sig selv.
+    $sql = $unheardOnly
+        ? 'SELECT * FROM (' . $inner . ') q WHERE q.played_at IS NULL ORDER BY q.published_at DESC'
+        : $inner;
+
+    $stmt = $pdo->prepare($sql);
     $stmt->bindValue('dev', $deviceId);
     $stmt->execute();
     return $stmt->fetchAll();

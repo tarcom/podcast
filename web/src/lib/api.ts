@@ -4,6 +4,35 @@ import type { EpisodeRow, Favorite, Podcast } from '../types'
 const API_BASE = import.meta.env.VITE_API_BASE || '/podcast/api/index.php'
 const client = axios.create({ baseURL: API_BASE, timeout: 30000 })
 
+// ---------------------------------------------------------------------------------------------
+// VIGTIG one.com-grænse (målt 2026-08-10 i browseren mod den live side):
+//   1 samtidig forespørgsel → 13 ms · 2 samtidige → 17 ms · 3 samtidige → ÉN af dem tager 1030 ms
+//   · 4 samtidige → TO af dem tager ~1015 ms.
+// Hosten serverer altså kun 2 PHP-kald ad gangen pr. klient og parkerer resten i **præcis ét
+// sekund**. Det ramte hver eneste sideindlæsning (start fyrede favorites+kø+charts+discover af
+// på én gang), og det var i praksis det sekund hvor køen manglede indhold. Bemærk at det IKKE
+// kan ses med curl fra kommandolinjen — der får hver forespørgsel sin egen forbindelse.
+// Derfor holder vi selv loftet på 2; så venter et kald højst på et andet der tager ~15 ms.
+const MAX_INFLIGHT = 2
+let inflight = 0
+const waiting: (() => void)[] = []
+
+async function limited<T>(run: () => Promise<T>): Promise<T> {
+  if (inflight >= MAX_INFLIGHT) await new Promise<void>((resolve) => waiting.push(resolve))
+  inflight++
+  try {
+    return await run()
+  } finally {
+    inflight--
+    waiting.shift()?.()
+  }
+}
+
+type Params = Record<string, unknown>
+const apiGet = (params: Params) => limited(() => client.get('', { params }))
+const apiPost = (body: unknown, params: Params) => limited(() => client.post('', body, { params }))
+const apiDelete = (params: Params, data: unknown) => limited(() => client.delete('', { params, data }))
+
 type RawRecord = Record<string, unknown>
 const s = (v: unknown): string => (typeof v === 'string' ? v : '')
 const n = (v: unknown): number => (typeof v === 'number' ? v : Number(v || 0))
@@ -47,36 +76,36 @@ function normalizeEpisodeRow(r: RawRecord): EpisodeRow {
 
 // --- Discovery ---
 export async function discover(lang = 'da', max = 80): Promise<Podcast[]> {
-  const { data } = await client.get('', { params: { action: 'discover', lang, max } })
+  const { data } = await apiGet({ action: 'discover', lang, max })
   return (data.feeds || []).map(normalizePodcast)
 }
 
 export async function search(q: string, max = 80): Promise<Podcast[]> {
-  const { data } = await client.get('', { params: { action: 'search', q, max } })
+  const { data } = await apiGet({ action: 'search', q, max })
   return (data.feeds || []).map(normalizePodcast)
 }
 
 export async function resolveUrl(url: string): Promise<Podcast | null> {
-  const { data } = await client.get('', { params: { action: 'resolveUrl', url } })
+  const { data } = await apiGet({ action: 'resolveUrl', url })
   if (data.feed) return normalizePodcast(data.feed)
   return null
 }
 
 // Tilføj et Podimo-show via dets show-URL. Afsnit hentes af HTPC-scraperen bagefter.
 export async function addPodimoShow(deviceId: string, url: string): Promise<string | null> {
-  const { data } = await client.post('', { deviceId, url }, { params: { action: 'podimo.add' } })
+  const { data } = await apiPost({ deviceId, url }, { action: 'podimo.add' })
   return data && data.status ? (data.title as string) : null
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
-  const { data } = await client.get('', { params: { action: 'podcast', id: feedId } })
+  const { data } = await apiGet({ action: 'podcast', id: feedId })
   if (data.feed) return normalizePodcast(data.feed)
   return null
 }
 
 // --- Favorites ---
 export async function listFavorites(deviceId: string): Promise<Favorite[]> {
-  const { data } = await client.get('', { params: { action: 'favorites.list', deviceId } })
+  const { data } = await apiGet({ action: 'favorites.list', deviceId })
   return (data.items || []).map((it: RawRecord) => ({
     feedId: n(it.feed_id),
     title: s(it.title),
@@ -89,9 +118,7 @@ export async function listFavorites(deviceId: string): Promise<Favorite[]> {
 }
 
 export async function addFavorite(deviceId: string, p: Podcast, addedVia = 'search'): Promise<void> {
-  await client.post(
-    '',
-    {
+  await apiPost({
       deviceId,
       feedId: p.id,
       title: p.title,
@@ -101,22 +128,31 @@ export async function addFavorite(deviceId: string, p: Podcast, addedVia = 'sear
       feedUrl: p.feedUrl || '',
       addedVia,
     },
-    { params: { action: 'favorites.add' } },
+    { action: 'favorites.add' },
   )
 }
 
 export async function removeFavorite(deviceId: string, feedId: number): Promise<void> {
-  await client.delete('', { params: { action: 'favorites.remove' }, data: { deviceId, feedId } })
+  await apiDelete({ action: 'favorites.remove' }, { deviceId, feedId })
 }
 
 // --- Episodes ---
+// Køen fra cachen. Rører ikke nettet på serveren → svarer på ~80 ms.
 export async function newestEpisodes(deviceId: string): Promise<EpisodeRow[]> {
-  const { data } = await client.get('', { params: { action: 'episodes.newest', deviceId } })
+  const { data } = await apiGet({ action: 'episodes.newest', deviceId })
   return (data.items || []).map(normalizeEpisodeRow)
 }
 
+// Den langsomme del: serveren henter forældede feeds' RSS (1-3 sek.). Kaldes FØRST når køen er
+// tegnet, så ventetiden ligger bag en spinner i stedet for foran hele indholdet.
+// `changed` = der kom nye afsnit ind, dvs. det kan betale sig at hente køen igen.
+export async function refreshFeeds(deviceId: string): Promise<{ feeds: number; inserted: number; changed: boolean }> {
+  const { data } = await apiGet({ action: 'episodes.refresh', deviceId })
+  return { feeds: Number(data.feeds || 0), inserted: Number(data.inserted || 0), changed: !!data.changed }
+}
+
 export async function feedEpisodes(deviceId: string, feedId: number): Promise<EpisodeRow[]> {
-  const { data } = await client.get('', { params: { action: 'episodes.feed', deviceId, id: feedId } })
+  const { data } = await apiGet({ action: 'episodes.feed', deviceId, id: feedId })
   return (data.items || []).map(normalizeEpisodeRow)
 }
 
@@ -125,7 +161,7 @@ export async function setState(
   deviceId: string,
   payload: { episodeId: number; feedId: number; played?: boolean; positionSec?: number; durationSec?: number },
 ): Promise<void> {
-  await client.post('', { deviceId, ...payload }, { params: { action: 'state.set' } })
+  await apiPost({ deviceId, ...payload }, { action: 'state.set' })
 }
 
 // Bulk: markér mange afsnit hørt/uhørt på én gang (til "ryd alt herunder").
@@ -135,7 +171,7 @@ export async function setStateMany(
   played: boolean,
 ): Promise<void> {
   if (!episodes.length) return
-  await client.post('', { deviceId, episodes, played }, { params: { action: 'state.setMany' } })
+  await apiPost({ deviceId, episodes, played }, { action: 'state.setMany' })
 }
 
 // --- Popularitet: Apples danske hitlister (top 50 podcasts + 25 trending afsnit) ---
@@ -145,6 +181,6 @@ export type ChartShow = { rank: number; name: string; artist: string; itunesId: 
 export type ChartEpisode = { rank: number; name: string; artist: string; artwork: string; norm: string }
 
 export async function getCharts(): Promise<{ shows: ChartShow[]; episodes: ChartEpisode[] }> {
-  const { data } = await client.get('', { params: { action: 'charts' } })
+  const { data } = await apiGet({ action: 'charts' })
   return { shows: data.shows || [], episodes: data.episodes || [] }
 }

@@ -8,6 +8,7 @@ import {
   getPodcast,
   listFavorites,
   newestEpisodes,
+  refreshFeeds,
   removeFavorite,
   resolveUrl,
   search,
@@ -125,6 +126,11 @@ export default function App() {
   const favIds = useMemo(() => new Set(favorites.map((f) => f.feedId)), [favorites])
   const [queue, setQueue] = useState<EpisodeRow[]>([])
   const [loadingQueue, setLoadingQueue] = useState(false)
+  // Har vi hentet køen mindst én gang? Uden det viste vi "Alt er hørt 🎉" i det sekund hvor
+  // favoritterne var kommet hjem, men afsnittene ikke var — en tom kø betyder ikke "hørt".
+  const [queueLoaded, setQueueLoaded] = useState(false)
+  // Serveren henter forældede feeds' RSS i baggrunden; det er dét spinneren over listen viser.
+  const [checkingFeeds, setCheckingFeeds] = useState(false)
 
   // explore
   const [query, setQuery] = useState('')
@@ -166,15 +172,30 @@ export default function App() {
     setLoadingQueue(true)
     try {
       setQueue(await newestEpisodes(deviceId))
+      setQueueLoaded(true)
     } finally {
       setLoadingQueue(false)
     }
   }, [deviceId])
 
+  // To-trins-load: (1) cachen tegnes med det samme, (2) serveren tjekker feeds online bagefter og
+  // vi henter kun køen igen hvis der faktisk kom nye afsnit. Før lå (2) inde i (1), så HELE
+  // indholdet ventede 1-3 sek. på RSS-hentninger der som regel ikke gav noget nyt.
+  const refreshFromFeeds = useCallback(async () => {
+    setCheckingFeeds(true)
+    try {
+      const res = await refreshFeeds(deviceId)
+      if (res.changed) setQueue(await newestEpisodes(deviceId))
+    } catch {
+      // feed-tjek er best-effort — cachen står allerede på skærmen
+    } finally {
+      setCheckingFeeds(false)
+    }
+  }, [deviceId])
+
   useEffect(() => {
     loadFavorites()
-    loadQueue()
-    discover('da', 60).then(setResults).catch(() => {})
+    loadQueue().then(refreshFromFeeds)
     // popularitet er pynt — fejler den, skal resten af app'en være upåvirket
     getCharts()
       .then((c) => {
@@ -182,7 +203,20 @@ export default function App() {
         setChartEpisodes(c.episodes)
       })
       .catch(() => {})
-  }, [loadFavorites, loadQueue])
+  }, [loadFavorites, loadQueue, refreshFromFeeds])
+
+  // Udforsk-listen hentes først når fanen åbnes (fra klik-handleren, ikke en effect — den koster
+  // ~0,7 sek. hos Podcast Index, og startfanen er Kø, så på start kappedes den før om
+  // forbindelsen med det indhold man faktisk kigger på).
+  const openExplore = useCallback(() => {
+    setTab('explore')
+    if (results.length > 0) return
+    setExploreBusy(true)
+    discover('da', 60)
+      .then(setResults)
+      .catch(() => {})
+      .finally(() => setExploreBusy(false))
+  }, [results.length])
 
   // ---------- explore ----------
   const runSearch = useCallback(async () => {
@@ -225,14 +259,16 @@ export default function App() {
       await addFavorite(deviceId, p, 'url')
       setUrlInput('')
       await loadFavorites()
+      // Et nyt feed har ingen cache endnu, så køen skal have fat i RSS'et for at vise noget.
       await loadQueue()
+      refreshFromFeeds()
       setResults((prev) => [p, ...prev.filter((x) => x.id !== p.id)])
     } catch {
       setExploreErr('Kunne ikke tilføje feed via URL.')
     } finally {
       setExploreBusy(false)
     }
-  }, [urlInput, deviceId, loadFavorites, loadQueue])
+  }, [urlInput, deviceId, loadFavorites, loadQueue, refreshFromFeeds])
 
   const orderedResults = useMemo(() => {
     let r = results
@@ -252,8 +288,10 @@ export default function App() {
       }
       await loadFavorites()
       await loadQueue()
+      // Nyfulgt podcast har ingen cachede afsnit endnu — hent dem i baggrunden.
+      refreshFromFeeds()
     },
-    [favIds, deviceId, loadFavorites, loadQueue],
+    [favIds, deviceId, loadFavorites, loadQueue, refreshFromFeeds],
   )
 
   // ---------- podcast detail ----------
@@ -441,11 +479,6 @@ export default function App() {
 
   const unheardCount = queue.filter((e) => !e.playedAt).length
 
-  // "Fortsætter": afsnit man er midt i, senest lyttede først.
-  const continuing = queue
-    .filter((e) => isInProgress(e.positionSec || 0, e.durationSec || 0, !!e.playedAt))
-    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
-
   // ---------- render ----------
   return (
     <div className="app">
@@ -467,7 +500,7 @@ export default function App() {
         <button className={tab === 'favorites' ? 'on' : ''} onClick={() => setTab('favorites')}>
           Favoritter
         </button>
-        <button className={tab === 'explore' ? 'on' : ''} onClick={() => setTab('explore')}>
+        <button className={tab === 'explore' ? 'on' : ''} onClick={openExplore}>
           Udforsk
         </button>
       </nav>
@@ -576,36 +609,25 @@ export default function App() {
         <section className="panel">
           <div className="panel-head">
             <h2>Nyeste uhørte</h2>
-            <button className="ghost" onClick={loadQueue} disabled={loadingQueue}>
-              {loadingQueue ? 'Opdaterer…' : 'Opdatér'}
+            <button className="ghost" onClick={() => loadQueue().then(refreshFromFeeds)} disabled={loadingQueue || checkingFeeds}>
+              {loadingQueue || checkingFeeds ? 'Opdaterer…' : 'Opdatér'}
             </button>
           </div>
-          {favorites.length === 0 && <p className="muted">Følg nogle podcasts, så samler vi de nyeste afsnit her.</p>}
-          {favorites.length > 0 && unheardCount === 0 && <p className="muted">Alt er hørt 🎉</p>}
 
-          {continuing.length > 0 && (
-            <div className="daygroup continuing">
-              <div className="day-head">
-                <h3>▶ Fortsætter</h3>
-              </div>
-              <ul className="episodes">
-                {continuing.map((ep) => (
-                  <EpisodeItem
-                    key={ep.episodeId}
-                    ep={ep}
-                    isCurrent={current?.episodeId === ep.episodeId}
-                    liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
-                    chartRank={rankForEpisode(ep.title)}
-                    onPlay={() => playEpisode(ep)}
-                    onToggleHeard={() => markHeard(ep, !ep.playedAt)}
-                    onInfo={() => setOpenEpisode(ep)}
-                  />
-                ))}
-              </ul>
-            </div>
+          {/* Spinner OVER listen: cachen er allerede tegnet, det her er kun feed-tjekket. */}
+          {checkingFeeds && (
+            <p className="feedcheck">
+              <span className="spinner" aria-hidden="true" /> Søger efter nye afsnit…
+            </p>
           )}
 
-          {groupByDay(queue.filter((e) => !e.playedAt && !isInProgress(e.positionSec || 0, e.durationSec || 0, false))).map((g) => (
+          {!queueLoaded && <p className="muted">Henter køen…</p>}
+          {queueLoaded && favorites.length === 0 && <p className="muted">Følg nogle podcasts, så samler vi de nyeste afsnit her.</p>}
+          {queueLoaded && favorites.length > 0 && unheardCount === 0 && !checkingFeeds && <p className="muted">Alt er hørt 🎉</p>}
+
+          {/* Afsnit man er i gang med bliver liggende i deres egen dag-gruppe (kronologien er
+              pointen) — de markeres i stedet på selve rækken, se `.episode.continuing`. */}
+          {groupByDay(queue.filter((e) => !e.playedAt)).map((g) => (
             <div className="daygroup" key={g.key}>
               <div className="day-head">
                 <h3>{g.label}</h3>
@@ -865,7 +887,7 @@ function EpisodeItem({
   // som blokeres i installerede PWA'er på Android)
   const activate = () => { if (playable) onPlay(); else onInfo() }
   return (
-    <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''}`}>
+    <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''} ${started ? 'continuing' : ''}`}>
       <button
         className={`ep-thumb ${playable ? '' : 'link'}`}
         onClick={activate}
@@ -877,6 +899,7 @@ function EpisodeItem({
       <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
         <span className="ep-meta">
+          {started && <em className="cont-chip" title="Du er i gang med dette afsnit">▶ Fortsætter</em>}
           {chartRank && (
             <em className="hot" title={`Nr. ${chartRank} på Apples trending-afsnit i Danmark lige nu`}>
               🔥 #{chartRank} i DK

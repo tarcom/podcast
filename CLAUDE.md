@@ -14,14 +14,17 @@ er lette at snuble over.
   pr-device hørt-tilstand). Kun-favoritter-model; hørt = grå + driver "næste uhørte" i Kø-fanen.
 
 ## Gotchas
-- **Vite 8 kræver Node 20+.** HTPC'ens system-node er 18. Byg med `nvm use 20` (nvm er installeret
-  i `~/.nvm`). `node_modules` skal installeres under node 20 (rolldown har en native binding pr.
-  version) — ellers "Cannot find module rolldown-binding".
+- **Vite 8 kræver Node 20+.** Migreringen til den nye HTPC (2026-08-04) tog **hverken node eller
+  nvm med** — maskinen havde slet ingen node, så `deploy.sh web` kunne ikke bygge. Rettet
+  2026-08-10: **`nodejs` 22.22 + `npm` fra Ubuntu 26.04's apt** (`sudo apt install nodejs npm`).
+  Ingen nvm længere, ingen `nvm use`. Det medbragte `node_modules` (installeret under node 20)
+  virkede uændret under node 22 — rolldowns binding er N-API og skulle ikke geninstalleres.
 - **`api/config.php`** (Podcast Index-nøgler + MySQL-creds) er **gitignored** og ligger KUN på
   serveren. `deploy.sh api` uploader den bevidst med. Samme MySQL som resten af aogj.com:
   host `aogj.com.mysql`, bruger/db `aogj_com`.
-- **Ingen cron.** Refresh sker "ved åbning" (backenden henter forældede favoritters afsnit inline
-  når køen loades). Bevidst — one.com/simply-cron er ikke en forudsætning.
+- **Ingen cron.** Refresh sker "ved åbning" — men **ikke længere inline i kø-svaret**: frontenden
+  henter cachen først og kalder `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor).
+  Bevidst uden cron — one.com/simply-cron er ikke en forudsætning.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
   path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v4`**).
 - **Installerbarhed (fixet 2026-07-27):** `web/index.html` manglede `<link rel="manifest">` (Vite
@@ -304,6 +307,70 @@ Lyden er DRM-låst → kan ikke afspilles i app'en; realistisk plan = **link-out
 som DR/paywall-afsnit allerede gør) så man kun får besked om nye afsnit. Afventer bruger-beslutning
 (kræver login + er en selvstændig integration: "tilføj Podimo-show via URL" + Selenium-scraper +
 gemme som `link_url`-afsnit uden `audio_url`).
+
+## one.com serverer kun 2 samtidige PHP-kald (2026-08-10) — VIGTIGST
+Det var **den egentlige** kilde til det ~1 sekund brugeren så. Målt i browseren mod den live side:
+
+| samtidige kald | resultat |
+|---|---|
+| 1 | 13 ms |
+| 2 | 17 ms |
+| 3 | én af dem **1030 ms** |
+| 4 | to af dem **~1015 ms** |
+
+Hosten parkerer altså kald nr. 3+ i **præcis ét sekund**. Ventetiden ligger i TTFB, ikke i
+connect/TLS, og forbindelsen er genbrugt — det er serverside. App'en fyrede før fire kald af på
+mount (`favorites.list` + `episodes.newest` + `discover` + `charts`), så **ét tilfældigt af dem**
+betalte sekundet; ramte det køen, stod siden tom imens.
+- **Fix: `MAX_INFLIGHT = 2` i `web/src/lib/api.ts`.** Alle kald går gennem `apiGet`/`apiPost`/
+  `apiDelete`, som er kø-styret af `limited()`. Det gælder derfor også modaler (`getPodcast` +
+  `feedEpisodes` samtidig) — ikke kun opstarten.
+- **FÆLDE ved fejlsøgning: det kan IKKE ses med curl.** Tre samtidige `curl` svarer alle på 40-80 ms,
+  fordi hver får sin egen TCP-forbindelse. Grænsen viser sig kun fra en rigtig browser. Brug
+  `performance.getEntriesByType('resource')` i Selenium og se på `responseStart - requestStart`.
+- Gælder efter alt at dømme **hele aogj.com** (delt hosting), altså også `todo`, `fryser`,
+  `superbits`, `bio`, `temp_sensors`. Hold antallet af parallelle API-kald på 2.
+
+## Kø-load: cache først, feed-tjek bagefter (2026-08-10)
+**Problem:** ved åbning viste køen "Alt er hørt 🎉" i ca. 1 sek., og derefter kom alt indholdet.
+**Årsag — ikke databasen:** `episodes.newest` kaldte `podcast_refresh_stale_favorites()` **før**
+den svarede, dvs. den hentede op til 8 forældede feeds' RSS over nettet (målt **0,15-0,38 sek. pr.
+feed** med `feed.refreshRss` → 1-3 sek. i alt) inden den sendte den cache den allerede havde
+liggende. Imens var `favorites.list` (~0,1 sek.) forlængst hjemme, så `favorites.length > 0 &&
+unheardCount === 0` var sandt → tom-tilstanden blev tegnet. Selve SQL'en er ~80 ms.
+**Fix, tre dele:**
+- **Split af endpointet.** `episodes.newest` er nu **ren cache-læsning** (rører aldrig nettet).
+  Refresh'en har fået sit eget `episodes.refresh`, som frontenden kalder **efter** at køen er
+  tegnet. Det returnerer `feeds`/`inserted`/`changed`, og køen genhentes **kun** hvis `changed` —
+  som regel er der intet nyt, og så koster baggrundstjekket ingen ekstra payload.
+  `podcast_refresh_feed()` returnerer derfor nu et antal i stedet for `void`.
+- **Tom-tilstanden må ikke gætte.** Ny `queueLoaded`-state: en tom kø betyder kun "alt er hørt"
+  når vi rent faktisk **har** hentet den. Under load vises "Henter køen…", og over listen en
+  spinner (`.feedcheck`) mens `episodes.refresh` arbejder — cachen står bag den imens.
+- **Payload halveret+.** Køen viser kun uhørte, men hentede alle 200 nyeste: målt **132 af 200
+  rækker hørte = 201 KB af 298 KB** sendt til ingen nytte (`description` alene er 49 %).
+  `podcast_newest_episodes($unheardOnly=true)` filtrerer dem fra i en **ydre** forespørgsel, så
+  vinduet stadig er "de 200 nyeste afsnit" og ikke "de 200 nyeste uhørte" — ellers ville gamle
+  afsnit pludselig dukke op i køen. Resultat: 200 → 65 rækker, 298 → 94 KB (25 KB gzippet).
+  **FÆLDE der slap igennem til produktion i ti minutter:** den ydre forespørgsel **skal** have sin
+  egen `ORDER BY`. MariaDB bruger kun den indre `ORDER BY` til at afgøre hvilke rækker `LIMIT`
+  beholder — rækkefølgen *ud af* en afledt tabel er udefineret. Køen kom blandet ud (9 brud på 65
+  rækker), hvilket viste sig som **gentagne dag-overskrifter** ("Onsdag" efter "03. August").
+  Tjek altid sorteringen efter et skema-/forespørgselsindgreb, ikke bare antallet af rækker.
+- **`discover` udskudt:** Udforsk-listen (~0,7 sek. hos Podcast Index) hentes nu først når fanen
+  åbnes, fra klik-handleren (ikke en effect — `react-hooks/set-state-in-effect` afviser det).
+  Før kørte den på mount og var et af de fire kald der ramte 2-kalds-loftet ovenfor.
+- **Målt resultat (Selenium mod live siden, kold browser):** afsnit på skærmen efter **~130 ms**
+  mod **1143 ms** før. "Alt er hørt" blinker ikke længere forbi. SW-cache bumpet til `nordpod-v7`.
+
+## "Fortsætter" ligger nu i kronologien (2026-08-10)
+Sektionen øverst er **fjernet**. Afsnit man er i gang med bliver liggende i deres normale
+dag-gruppe (det er kronologien der er pointen), og markeres i stedet på **selve rækken**:
+`.episode.continuing` = samme lysegrønne flade som den gamle boks + en terracotta-kant, plus en
+"▶ Fortsætter"-chip i meta-linjen. Fremdriftsbjælken og "X min tilbage" var der allerede og styres
+af samme `isInProgress()`. Dag-grupperne filtrerer ikke længere in-progress-afsnit fra.
+NB: "✓ ryd herunder" tog allerede in-progress-afsnit med (den filtrerer på `playedAt`, ikke på
+visningen), så adfærden er uændret der.
 
 ## Recommendations (ønsket, ikke bygget)
 Bruger vil have forslag baseret på favoritter. Kan gøres via Podcast Index-kategorier på favoritter

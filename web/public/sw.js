@@ -1,5 +1,5 @@
 // App lives under /podcast/ on aogj.com — all shell paths are scoped there.
-const CACHE_NAME = 'nordpod-v5'
+const CACHE_NAME = 'nordpod-v7'
 const BASE = '/podcast/'
 const APP_SHELL = [
   BASE, BASE + 'index.html', BASE + 'manifest.webmanifest',

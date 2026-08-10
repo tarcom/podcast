@@ -285,11 +285,25 @@ try {
             $pdo = db($config);
             json_response(['status' => true, 'items' => podcast_feed_episodes($config, $pdo, $deviceId, $feedId)]);
 
+        // Ren cache-læsning — henter ALDRIG feeds over nettet, så køen kan tegnes med det samme.
+        // Opdateringen ligger i `episodes.refresh` nedenfor og køres af frontenden bagefter.
         case 'episodes.newest':
             $deviceId = $deviceFromGet();
             $pdo = db($config);
-            podcast_refresh_stale_favorites($config, $pdo, $deviceId);
             json_response(['status' => true, 'items' => podcast_newest_episodes($pdo, $deviceId)]);
+
+        // Den langsomme halvdel: hent forældede favoritters RSS (0,15-0,38 sek. pr. feed, op til 8).
+        // Svarer med hvor meget der reelt kom ind, så frontenden kun genhenter køen når der ER nyt.
+        case 'episodes.refresh':
+            $deviceId = $deviceFromGet();
+            $pdo = db($config);
+            $res = podcast_refresh_stale_favorites($config, $pdo, $deviceId);
+            json_response([
+                'status'   => true,
+                'feeds'    => $res['feeds'],
+                'inserted' => $res['inserted'],
+                'changed'  => $res['inserted'] > 0,
+            ]);
 
         // --- Played / position state ---
         case 'state.set':
