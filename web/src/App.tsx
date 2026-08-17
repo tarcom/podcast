@@ -12,14 +12,34 @@ import {
   removeFavorite,
   resolveUrl,
   search,
-  setState as saveState,
   setStateMany,
 } from './lib/api'
 import { getDeviceId } from './lib/device'
+import {
+  downloadEpisode,
+  downloadsSupported,
+  fmtBytes,
+  listDownloads,
+  reconcileDownloads,
+  removeAllDownloads,
+  removeDownload,
+  storageInfo,
+  type DownloadMeta,
+  type StorageInfo,
+} from './lib/downloads'
+import {
+  flushOutbox,
+  outboxSize,
+  readSnapshot,
+  saveSnapshot,
+  saveStateResilient,
+  type StateWrite,
+} from './lib/offline'
 import type { ChartEpisode, ChartShow } from './lib/api'
 import type { EpisodeRow, Favorite, Podcast } from './types'
 
-type Tab = 'explore' | 'favorites' | 'queue'
+type Tab = 'explore' | 'favorites' | 'queue' | 'downloads'
+type DlState = 'idle' | 'queued' | 'busy' | 'done' | 'error'
 type LangMode = 'da-first' | 'da-only' | 'all'
 
 const isDanish = (lang?: string) => (lang || '').toLowerCase().startsWith('da')
@@ -121,14 +141,15 @@ export default function App() {
   const deviceId = useMemo(getDeviceId, [])
   const [tab, setTab] = useState<Tab>('queue')
 
-  // data
-  const [favorites, setFavorites] = useState<Favorite[]>([])
+  // data — startværdien er sidste øjebliksbillede, så app'en har indhold med det samme og
+  // også kan åbnes helt uden dækning. Netværkssvaret overskriver det når det kommer.
+  const [favorites, setFavorites] = useState<Favorite[]>(() => readSnapshot<Favorite[]>('favorites') || [])
   const favIds = useMemo(() => new Set(favorites.map((f) => f.feedId)), [favorites])
-  const [queue, setQueue] = useState<EpisodeRow[]>([])
+  const [queue, setQueue] = useState<EpisodeRow[]>(() => readSnapshot<EpisodeRow[]>('queue') || [])
   const [loadingQueue, setLoadingQueue] = useState(false)
   // Har vi hentet køen mindst én gang? Uden det viste vi "Alt er hørt 🎉" i det sekund hvor
   // favoritterne var kommet hjem, men afsnittene ikke var — en tom kø betyder ikke "hørt".
-  const [queueLoaded, setQueueLoaded] = useState(false)
+  const [queueLoaded, setQueueLoaded] = useState(() => !!readSnapshot<EpisodeRow[]>('queue'))
   // Serveren henter forældede feeds' RSS i baggrunden; det er dét spinneren over listen viser.
   const [checkingFeeds, setCheckingFeeds] = useState(false)
 
@@ -153,6 +174,18 @@ export default function App() {
   const [chartShows, setChartShows] = useState<ChartShow[]>([])
   const [chartEpisodes, setChartEpisodes] = useState<ChartEpisode[]>([])
 
+  // offline / downloads
+  const canDownload = useMemo(() => downloadsSupported(), [])
+  const [downloads, setDownloads] = useState<DownloadMeta[]>(listDownloads)
+  const dlIds = useMemo(() => new Set(downloads.map((d) => d.ep.episodeId)), [downloads])
+  const [dlState, setDlState] = useState<Record<number, DlState>>({})
+  const [dlError, setDlError] = useState('')
+  const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null)
+  const cancelBulk = useRef(false)
+  const [storage, setStorage] = useState<StorageInfo | null>(null)
+  const [online, setOnline] = useState(navigator.onLine)
+  const [pending, setPending] = useState(0) // lytning der venter på at blive sendt til serveren
+
   // player
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [current, setCurrent] = useState<EpisodeRow | null>(null)
@@ -164,15 +197,27 @@ export default function App() {
   const lastSaved = useRef(0)
 
   // ---------- loaders ----------
+  // Begge gemmer et øjebliksbillede: uden det er app'en tom uden dækning, for alt indhold
+  // kommer fra api/index.php. Fejler kaldet, beholder vi det vi allerede viser.
   const loadFavorites = useCallback(async () => {
-    setFavorites(await listFavorites(deviceId))
+    try {
+      const items = await listFavorites(deviceId)
+      setFavorites(items)
+      saveSnapshot('favorites', items)
+    } catch {
+      // offline — øjebliksbilledet står allerede på skærmen
+    }
   }, [deviceId])
 
   const loadQueue = useCallback(async () => {
     setLoadingQueue(true)
     try {
-      setQueue(await newestEpisodes(deviceId))
+      const items = await newestEpisodes(deviceId)
+      setQueue(items)
       setQueueLoaded(true)
+      saveSnapshot('queue', items)
+    } catch {
+      // offline — behold øjebliksbilledet; queueLoaded er allerede sat hvis vi har et
     } finally {
       setLoadingQueue(false)
     }
@@ -204,6 +249,44 @@ export default function App() {
       })
       .catch(() => {})
   }, [loadFavorites, loadQueue, refreshFromFeeds])
+
+  const refreshDownloads = useCallback(async () => {
+    setDownloads(listDownloads())
+    setStorage(await storageInfo())
+  }, [])
+
+  // Al hørt-/positions-skrivning går herigennem: lykkes den ikke, lægger den sig i udbakken
+  // i stedet for at forsvinde. Ellers ville en uge uden dækning nulstille alt man har hørt.
+  const persistState = useCallback(
+    async (w: StateWrite) => {
+      await saveStateResilient(deviceId, w)
+      setPending(outboxSize())
+    },
+    [deviceId],
+  )
+
+  // Offline-husholdning: ryd op i hentede afsnit browseren har smidt ud, hold øje med
+  // forbindelsen, og send lytning der ligger i udbakken så snart der er hul igennem igen.
+  useEffect(() => {
+    if (canDownload) reconcileDownloads().then(refreshDownloads).catch(() => {})
+    const flush = () =>
+      flushOutbox(deviceId)
+        .then((sent) => {
+          setPending(outboxSize())
+          // serveren har nu vores lytning — hent køen igen så hørte afsnit forsvinder
+          if (sent > 0) loadQueue()
+        })
+        .catch(() => setPending(outboxSize()))
+    const goOnline = () => { setOnline(true); flush() }
+    const goOffline = () => setOnline(false)
+    window.addEventListener('online', goOnline)
+    window.addEventListener('offline', goOffline)
+    flush()
+    return () => {
+      window.removeEventListener('online', goOnline)
+      window.removeEventListener('offline', goOffline)
+    }
+  }, [deviceId, canDownload, refreshDownloads, loadQueue])
 
   // Udforsk-listen hentes først når fanen åbnes (fra klik-handleren, ikke en effect — den koster
   // ~0,7 sek. hos Podcast Index, og startfanen er Kø, så på start kappedes den før om
@@ -312,9 +395,96 @@ export default function App() {
     [deviceId],
   )
 
+  // ---------- offline-download ----------
+  // Returnerer null ved succes, ellers fejlteksten. `silent` bruges af bulk-hentningen, som
+  // samler fejlene til ét resumé til sidst — ellers ville hvert nyt afsnit viske den
+  // foregåendes fejl ud, og man ville aldrig opdage hvad der IKKE kom med på turen.
+  const startDownload = useCallback(
+    async (ep: EpisodeRow, silent = false): Promise<string | null> => {
+      if (!silent) setDlError('')
+      setDlState((s) => ({ ...s, [ep.episodeId]: 'busy' }))
+      try {
+        await downloadEpisode(ep)
+        setDlState((s) => ({ ...s, [ep.episodeId]: 'done' }))
+        await refreshDownloads()
+        return null
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'ukendt fejl'
+        setDlState((s) => ({ ...s, [ep.episodeId]: 'error' }))
+        if (!silent) setDlError(`Kunne ikke hente “${ep.title}”: ${msg}`)
+        return msg
+      }
+    },
+    [refreshDownloads],
+  )
+
+  const dropDownload = useCallback(
+    async (ep: EpisodeRow) => {
+      await removeDownload(ep.episodeId)
+      setDlState((s) => {
+        const next = { ...s }
+        delete next[ep.episodeId]
+        return next
+      })
+      await refreshDownloads()
+    },
+    [refreshDownloads],
+  )
+
+  // Bulk-hentning før en tur: ét afsnit ad gangen. Parallelt ville både mætte forbindelsen og
+  // gøre det umuligt at se hvor langt man er nået — og hver fil fylder 27-60 MB.
+  const downloadNext = useCallback(
+    async (count: number) => {
+      const targets = queue.filter((e) => !e.playedAt && e.audioUrl && !dlIds.has(e.episodeId)).slice(0, count)
+      if (!targets.length) return
+      cancelBulk.current = false
+      setDlError('')
+      setDlState((s) => {
+        const next = { ...s }
+        for (const t of targets) next[t.episodeId] = 'queued'
+        return next
+      })
+      setBulk({ done: 0, total: targets.length })
+      const failed: string[] = []
+      for (let i = 0; i < targets.length; i++) {
+        if (cancelBulk.current) break
+        if (await startDownload(targets[i], true)) failed.push(targets[i].title)
+        setBulk({ done: i + 1, total: targets.length })
+      }
+      if (failed.length) {
+        setDlError(
+          failed.length === 1
+            ? `Kunne ikke hente “${failed[0]}” — udbyderen afviste hentningen. Resten kom med.`
+            : `${failed.length} afsnit kunne ikke hentes: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? ' m.fl.' : ''}. Resten kom med.`,
+        )
+      }
+      // det der ikke nåede med, skal ikke blive stående som "i kø"
+      setDlState((s) => {
+        const next = { ...s }
+        for (const t of targets) if (next[t.episodeId] === 'queued') delete next[t.episodeId]
+        return next
+      })
+      setBulk(null)
+    },
+    [queue, dlIds, startDownload],
+  )
+
+  const clearAllDownloads = useCallback(async () => {
+    if (!confirm('Slet alle hentede afsnit? De kan hentes igen når du har forbindelse.')) return
+    await removeAllDownloads()
+    setDlState({})
+    await refreshDownloads()
+  }, [refreshDownloads])
+
   // ---------- playback ----------
   const playEpisode = useCallback((ep: EpisodeRow) => {
     if (!ep.audioUrl) return
+    // Uden dækning kan kun hentede afsnit spille — sig det, i stedet for at lade
+    // <audio> fejle med en kryptisk fejl et halvt sekund senere.
+    if (!online && !dlIds.has(ep.episodeId)) {
+      setDlError(`“${ep.title}” er ikke hentet, og du er offline. Hentede afsnit ligger under Hentet.`)
+      return
+    }
     setPlayErrorId(0)
     setCurrent(ep)
     setPlaying(true)
@@ -329,17 +499,17 @@ export default function App() {
         el.play().catch(() => setPlaying(false))
       }
     }, 0)
-  }, [])
+  }, [online, dlIds])
 
   const markHeard = useCallback(
     async (ep: EpisodeRow, heard: boolean) => {
-      await saveState(deviceId, { episodeId: ep.episodeId, feedId: ep.feedId, played: heard })
+      await persistState({ episodeId: ep.episodeId, feedId: ep.feedId, played: heard })
       const patch = (list: EpisodeRow[]) =>
         list.map((e) => (e.episodeId === ep.episodeId ? { ...e, playedAt: heard ? new Date().toISOString() : null } : e))
       setQueue(patch)
       setDetailEpisodes(patch)
     },
-    [deviceId],
+    [persistState],
   )
 
   // "ryd alt herunder": markér dette afsnit + alle ældre (i køen) som hørt
@@ -349,23 +519,31 @@ export default function App() {
       if (!targets.length) return
       const ids = new Set(targets.map((e) => e.episodeId))
       setQueue((list) => list.map((e) => (ids.has(e.episodeId) ? { ...e, playedAt: new Date().toISOString() } : e)))
-      await setStateMany(deviceId, targets.map((e) => ({ episodeId: e.episodeId, feedId: e.feedId })), true).catch(() => {})
+      try {
+        await setStateMany(deviceId, targets.map((e) => ({ episodeId: e.episodeId, feedId: e.feedId })), true)
+      } catch {
+        // offline: læg dem enkeltvis i udbakken i stedet for at tabe oprydningen
+        for (const e of targets) await persistState({ episodeId: e.episodeId, feedId: e.feedId, played: true })
+      }
     },
-    [queue, deviceId],
+    [queue, deviceId, persistState],
   )
 
   const onEnded = useCallback(async () => {
     if (!current) return
-    await saveState(deviceId, { episodeId: current.episodeId, feedId: current.feedId, played: true })
+    await persistState({ episodeId: current.episodeId, feedId: current.feedId, played: true })
     setQueue((list) => list.map((e) => (e.episodeId === current.episodeId ? { ...e, playedAt: new Date().toISOString() } : e)))
-    // auto-continue: next newest unheard, playable episode in the queue
-    const next = queue.find((e) => !e.playedAt && e.audioUrl && e.episodeId !== current.episodeId)
+    // auto-continue: næste uhørte, afspillelige afsnit. Uden dækning nytter det ikke at hoppe
+    // til et afsnit der ikke er hentet — så ville lytningen bare stoppe med en fejl.
+    const usable = (e: EpisodeRow) =>
+      !e.playedAt && !!e.audioUrl && e.episodeId !== current.episodeId && (online || dlIds.has(e.episodeId))
+    const next = queue.find(usable) || (online ? undefined : downloads.map((d) => d.ep).find(usable))
     if (next) playEpisode(next)
     else {
       setPlaying(false)
       setCurrent(null)
     }
-  }, [current, deviceId, queue, playEpisode])
+  }, [current, persistState, queue, playEpisode, online, dlIds, downloads])
 
   const onTimeUpdate = useCallback(() => {
     const el = audioRef.current
@@ -376,7 +554,7 @@ export default function App() {
     if (now - lastSaved.current > 8000) {
       lastSaved.current = now
       const secs = Math.floor(el.currentTime)
-      saveState(deviceId, {
+      persistState({
         episodeId: current.episodeId,
         feedId: current.feedId,
         positionSec: secs,
@@ -388,7 +566,7 @@ export default function App() {
       setQueue(patch)
       setDetailEpisodes(patch)
     }
-  }, [current, deviceId, seeking])
+  }, [current, persistState, seeking])
 
   const togglePlay = useCallback(() => {
     const el = audioRef.current
@@ -500,10 +678,29 @@ export default function App() {
         <button className={tab === 'favorites' ? 'on' : ''} onClick={() => setTab('favorites')}>
           Favoritter
         </button>
+        {canDownload && (
+          <button className={tab === 'downloads' ? 'on' : ''} onClick={() => setTab('downloads')}>
+            Hentet {downloads.length > 0 && <em>{downloads.length}</em>}
+          </button>
+        )}
         <button className={tab === 'explore' ? 'on' : ''} onClick={openExplore}>
           Udforsk
         </button>
       </nav>
+
+      {!online && (
+        <p className="offline-banner">
+          ✈️ <strong>Offline</strong> — du kan afspille de {downloads.length} hentede afsnit.
+          {pending > 0 && ` Lytning på ${pending} afsnit sendes til serveren når du får forbindelse igen.`}
+        </p>
+      )}
+      {online && pending > 0 && <p className="offline-banner sync">↻ Sender lytning på {pending} afsnit…</p>}
+      {dlError && (
+        <p className="error dl-error">
+          {dlError}
+          <button className="ghost" onClick={() => setDlError('')}>Luk</button>
+        </p>
+      )}
 
       {tab === 'explore' && (
         <section className="panel">
@@ -614,6 +811,28 @@ export default function App() {
             </button>
           </div>
 
+          {canDownload && (
+            <div className="bulkbar">
+              <span className="bulk-text">⬇ Hent uhørte afsnit, så de kan afspilles uden dækning</span>
+              {bulk ? (
+                <span className="bulk-actions">
+                  <span className="bulk-progress">
+                    <span className="spinner" aria-hidden="true" /> Henter {Math.min(bulk.done + 1, bulk.total)} af {bulk.total}…
+                  </span>
+                  <button className="ghost" onClick={() => { cancelBulk.current = true }}>Stop</button>
+                </span>
+              ) : (
+                <span className="bulk-actions">
+                  {[5, 10, 20].map((n) => (
+                    <button key={n} className="ghost" disabled={!online} onClick={() => downloadNext(n)}>
+                      Hent {n}
+                    </button>
+                  ))}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Spinner OVER listen: cachen er allerede tegnet, det her er kun feed-tjekket. */}
           {checkingFeeds && (
             <p className="feedcheck">
@@ -647,14 +866,70 @@ export default function App() {
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     chartRank={rankForEpisode(ep.title)}
+                    canDownload={canDownload}
+                    downloaded={dlIds.has(ep.episodeId)}
+                    dl={dlState[ep.episodeId] || 'idle'}
+                    offline={!online}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
+                    onDownload={() => startDownload(ep)}
+                    onRemoveDownload={() => dropDownload(ep)}
                   />
                 ))}
               </ul>
             </div>
           ))}
+        </section>
+      )}
+
+      {tab === 'downloads' && (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Hentet til offline</h2>
+            {downloads.length > 0 && (
+              <button className="ghost" onClick={clearAllDownloads}>Slet alle</button>
+            )}
+          </div>
+
+          {storage && (
+            <div className="storage">
+              <div className="storage-track">
+                <span className="storage-fill" style={{ width: `${Math.min(100, (storage.usage / (storage.quota || 1)) * 100)}%` }} />
+              </div>
+              <p className="muted storage-text">
+                {fmtBytes(storage.usage)} brugt · {fmtBytes(Math.max(0, storage.quota - storage.usage))} ledigt til app'en
+              </p>
+            </div>
+          )}
+
+          {downloads.length === 0 ? (
+            <p className="muted">
+              Ingen hentede afsnit endnu. Tryk ⬇ på et afsnit i køen — eller brug “Hent 5/10/20”
+              øverst i Kø-fanen inden du kører et sted hen uden dækning.
+            </p>
+          ) : (
+            <ul className="episodes">
+              {downloads.map((d) => (
+                <EpisodeItem
+                  key={d.ep.episodeId}
+                  ep={d.ep}
+                  isCurrent={current?.episodeId === d.ep.episodeId}
+                  liveTime={current?.episodeId === d.ep.episodeId ? curTime : undefined}
+                  chartRank={rankForEpisode(d.ep.title)}
+                  canDownload={canDownload}
+                  downloaded
+                  dl={dlState[d.ep.episodeId] || 'idle'}
+                  offline={!online}
+                  onPlay={() => playEpisode(d.ep)}
+                  onToggleHeard={() => markHeard(d.ep, !d.ep.playedAt)}
+                  onInfo={() => setOpenEpisode(d.ep)}
+                  onDownload={() => startDownload(d.ep)}
+                  onRemoveDownload={() => dropDownload(d.ep)}
+                />
+              ))}
+            </ul>
+          )}
         </section>
       )}
 
@@ -694,9 +969,15 @@ export default function App() {
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     chartRank={rankForEpisode(ep.title)}
+                    canDownload={canDownload}
+                    downloaded={dlIds.has(ep.episodeId)}
+                    dl={dlState[ep.episodeId] || 'idle'}
+                    offline={!online}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
                     onInfo={() => setOpenEpisode(ep)}
+                    onDownload={() => startDownload(ep)}
+                    onRemoveDownload={() => dropDownload(ep)}
                   />
                 ))}
               </ul>
@@ -860,17 +1141,29 @@ function EpisodeItem({
   isCurrent,
   liveTime,
   chartRank,
+  canDownload,
+  downloaded,
+  dl,
+  offline,
   onPlay,
   onToggleHeard,
   onInfo,
+  onDownload,
+  onRemoveDownload,
 }: {
   ep: EpisodeRow
   isCurrent: boolean
   liveTime?: number // sekunder for det afsnit der spiller lige nu (så bjælken bevæger sig)
   chartRank?: number // placering på Apples danske trending-afsnit-liste
+  canDownload: boolean // browseren har Cache API + service worker
+  downloaded: boolean
+  dl: DlState
+  offline: boolean
   onPlay: () => void
   onToggleHeard: () => void
   onInfo: () => void
+  onDownload: () => void
+  onRemoveDownload: () => void
 }) {
   const heard = !!ep.playedAt
   const art = ep.image || ep.podcastImage
@@ -886,8 +1179,12 @@ function EpisodeItem({
   // ikke-afspillelig (Podimo/DR app-only) → åbn forklarings-pop-up (IKKE window.open,
   // som blokeres i installerede PWA'er på Android)
   const activate = () => { if (playable) onPlay(); else onInfo() }
+  // uden dækning og uden at være hentet kan afsnittet ikke spille — vis det frem for at lade
+  // brugeren trykke forgæves
+  const unreachable = offline && playable && !downloaded
+  const busy = dl === 'busy' || dl === 'queued'
   return (
-    <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''} ${started ? 'continuing' : ''}`}>
+    <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''} ${started ? 'continuing' : ''} ${unreachable ? 'unreachable' : ''}`}>
       <button
         className={`ep-thumb ${playable ? '' : 'link'}`}
         onClick={activate}
@@ -920,6 +1217,23 @@ function EpisodeItem({
           </span>
         )}
       </button>
+      {canDownload && playable && (
+        <button
+          className={`dl-btn ${downloaded ? 'on' : ''} ${dl === 'error' ? 'err' : ''}`}
+          onClick={downloaded ? onRemoveDownload : onDownload}
+          disabled={busy}
+          title={
+            downloaded
+              ? 'Hentet — kan afspilles uden dækning. Tryk for at slette den igen.'
+              : dl === 'error'
+                ? 'Hentning mislykkedes — tryk for at prøve igen'
+                : 'Hent afsnittet så det kan afspilles uden dækning'
+          }
+          aria-label={downloaded ? 'Slet hentet afsnit' : 'Hent afsnit til offline'}
+        >
+          {dl === 'busy' ? <span className="spinner" aria-hidden="true" /> : dl === 'queued' ? '⋯' : dl === 'error' ? '↻' : '⬇'}
+        </button>
+      )}
       <button className={`heard-toggle ${heard ? 'on' : ''}`} onClick={onToggleHeard} title={heard ? 'Markér som uhørt' : 'Markér som hørt'}>
         ✓
       </button>

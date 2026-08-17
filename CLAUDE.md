@@ -26,7 +26,9 @@ er lette at snuble over.
   henter cachen først og kalder `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor).
   Bevidst uden cron — one.com/simply-cron er ikke en forudsætning.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
-  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v4`**).
+  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v8`**).
+  Lyd-cachen **`nordpod-audio-v1`** er en anden cache og skal blive stående — se afsnittet om
+  offline-download.
 - **Installerbarhed (fixet 2026-07-27):** `web/index.html` manglede `<link rel="manifest">` (Vite
   injicerer det IKKE selv — intet PWA-plugin), så Chrome tilbød kun "Opret genvej", ikke "Installér".
   Nu tilføjet (+ `theme-color` + `apple-touch-icon`) som **root-relative** stier (`/manifest.webmanifest`)
@@ -252,18 +254,66 @@ crawl-prioritet, ikke popularitet — verificeret på et rigtigt feed). **Spotif
 
 ## Castbox-feature-vurdering (2026-07-28)
 Allan bruger til dagligt **Castbox**; vi gennemgik dens features. **Besluttet/bygget:** spol ±10/30,
-fremdrift i kø, Fortsætter-sektion. **Fravalgt indtil videre:** offline download (se nedenfor).
+fremdrift i kø, Fortsætter-sektion, **offline download** (se eget afsnit nedenfor).
 **Endnu ikke besluttet:** afspilningshastighed, sleep timer, auto-spring-intro pr. podcast,
 volume boost. **Vurderet uegnet:** in-audio-søgning (kræver transskribering), CarPlay/Watch/Alexa/
 FM-radio (kan ikke i en PWA). Cross-device sync **har** vi allerede (fast `allan-main`).
-- **Offline download — undersøgt, udskudt (ikke afvist):** teknisk fint. Chrome/Android giver en
-  origin op til **60% af diskpladsen**, og afsnit vejer **27–57 MB**, så "flere hundrede MB" ≈ 8-10
-  afsnit. Kræver `navigator.storage.persist()` (ellers kan Android smide dem væk) + plads-UI.
-  **Vigtigt fund:** 5 af 6 af Allans lyd-CDN'er sender CORS (`api.dr.dk`, `traffic.omny.fm`,
-  `*.simplecastaudio.com`, `buzzsprout`) og kan hentes+gemmes som Blob (god spoling), men
-  **`media.pod.space` sender INGEN CORS** → kun opaque respons, ingen pålidelig spoling. Plan var
-  at skjule download-knappen der frem for at proxy'e lyden gennem one.com (delt hosting, dårlig idé
-  ved hundredvis af MB).
+
+## Offline-download (BYGGET 2026-08-17)
+Bygget til en køretur til Nordkapp uden mobildækning hele vejen. `web/src/lib/downloads.ts` +
+`web/src/lib/offline.ts` + ny **Hentet**-fane. Ingen backend-ændring — deploy kun `web`.
+
+**Lyden hentes med `fetch(url, {mode:'no-cors'})` og lægges i Cache API; service workeren
+serverer den, så `<audio src=afsnittets rigtige URL>` virker uændret uden dækning.**
+Tre målinger afgjorde designet — gentag dem før du laver om på det:
+- **CORS findes stort set ikke på lyd-CDN'erne.** Målt i rigtig Chrome fra `aogj.com`-origin
+  (2026-08-17): kun **3 af 7** værter i Allans kø tillader en læsbar fetch — `api.dr.dk`,
+  `traffic.omny.fm`, `api.spreaker.com`. `media.pod.space`, `www.buzzsprout.com` og **begge**
+  `simplecastaudio`-værter fejler med "TypeError: Failed to fetch". Den gamle note om at 5 af 6
+  sendte CORS var **forkert** (den så kun på første hop; ACAO mangler på det hop hvor bytes
+  leveres, bl.a. fordi CloudFront cacher svaret uden `Vary: Origin`). **Kan ikke ses med curl.**
+- **Den læsbare Blob-vej blev afprøvet og FRAVALGT.** Man kan godt hente en Blob fra de tre
+  CORS-værter og få procentvis fremdrift, men et `Response` man selv bygger i JS er ikke
+  byte-range-dueligt: `audio.seekable` blev **[0,0]** og spoling var umulig. Derfor ingen
+  download-procent — kun spinner pr. afsnit og "N af M" ved bulk.
+- **Opaque virker derimod perfekt, på alle værter.** Verificeret ende-til-ende: varighed korrekt,
+  `seekable` = hele filen, spoling til slutningen lander rigtigt og afspilningen kører videre —
+  også med netværket slået fra. Chrome er **spolbar ca. 250 ms** efter start (den skal læse filen
+  ind fra cachen først); mål på `seekable`, ikke på et fast `setTimeout`, hvis du tester det.
+
+Faldgruber der er håndteret, og som du ikke må rulle tilbage:
+- **`AUDIO_CACHE` ('nordpod-audio-v1') skal stå i `KEEP` i sw.js' activate-handler.** Den slettede
+  før alt der ikke var det aktuelle `CACHE_NAME` — dvs. næste deploy ville have slettet alle
+  hentede afsnit, værst tænkeligt midt på turen.
+- **Hver download verificeres ved at afspille metadata før den tælles med.** Et opaque svar har
+  **altid status 0**, så et 403 fra CDN'et ligner en vellykket hentning indtil man står uden
+  dækning. Størrelsen kan ikke afsløre det: Chrome polstrer opaque svar tilfældigt — **samme
+  fejlside målte 2, 7,2, 9,9 og 13,7 MB i fire forsøg**. Fejler kontrollen, slettes filen igen og
+  afsnittet markeres ikke som hentet. Af samme grund vises **skønnet** størrelse pr. afsnit
+  (≈1 MB/min), mens totalen kommer fra `navigator.storage.estimate()`.
+- **App'en skal kunne ÅBNE offline, ikke bare afspille.** Alt indhold kom fra `api/index.php`, som
+  er dødt uden net. Køen og favoritterne gemmes derfor som øjebliksbillede i localStorage og
+  bruges som startværdi (lazy `useState`, ikke en effect — `react-hooks/set-state-in-effect`).
+- **Lytning må ikke gå tabt.** `state.set` fejler offline, og hørt/position ligger kun på serveren,
+  så to uger uden dækning ville nulstille alt. Alle skrivninger går gennem `saveStateResilient()`,
+  som lægger dem i en udbakke (én post pr. afsnit, nyeste felt vinder) og sender dem på
+  `online`-hændelsen. Derefter genhentes køen, så hørte afsnit forsvinder.
+- **Auto-videre springer afsnit over der ikke er hentet, når man er offline** — ellers stopper
+  lytningen bare med en fejl ved næste afsnit.
+- `navigator.storage.persist()` kaldes ved første download; uden den må Android smide filerne væk.
+
+**Sådan testes det uden at deploye** (service workers kræver HTTPS *eller* localhost):
+byg `web/dist`, og server det på `http://localhost:8572/podcast/` med en lille Python-proxy der
+videresender `/podcast/api/*` til `https://aogj.com/podcast/api/index.php`. Så kører app'en med
+rigtig SW + Cache API mod de rigtige data. Offline simuleres med **både** CDP
+`Network.emulateNetworkConditions {offline:true}` **og** en override af `navigator.onLine` —
+CDP alene ændrer ikke `navigator.onLine`, og app'en træffer beslutninger på den.
+**NB:** `device_id` er hardkodet til `allan-main` (`lib/device.ts`), så en test kan ikke få sin
+egen bruger — undgå at klikke hørt-knapper, eller ryd udbakken før forbindelsen kommer tilbage.
+
+**`www.buzzsprout.com` afviser HTPC** (Cloudflare, 403) — dens afsnit kan hverken hentes eller
+streames derfra, heller ikke i en rigtig browser. Det er **ikke** en fejl i app'en; på Allans
+telefon virker de. Brug den som testtilfælde for fejlhåndteringen.
 
 ## Podimo-integration (BYGGET 2026-07-27)
 Podimo er paywalled → Podcast Index kender dem ikke, og lyden er DRM-låst (kan ikke afspilles

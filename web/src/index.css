@@ -177,6 +177,41 @@ button:disabled { opacity: 0.6; cursor: default; }
 .clear-below { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; color: var(--muted); cursor: pointer; }
 .clear-below:hover { color: var(--danger); border-color: var(--danger); }
 
+/* ---- offline / hentede afsnit ---- */
+.offline-banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: #fbf4e9; border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--ink); }
+.offline-banner.sync { background: #eef4ef; color: var(--muted); }
+.dl-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.dl-error .ghost { flex-shrink: 0; }
+
+/* hent-knap pr. afsnit — samme størrelse som hørt-knappen, så rækken forbliver rolig */
+.dl-btn { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line);
+  background: #fff; color: var(--muted); cursor: pointer; flex-shrink: 0; font-size: 14px;
+  display: flex; align-items: center; justify-content: center; }
+.dl-btn.on { background: var(--moss); color: #fff; border-color: var(--moss); }
+.dl-btn.err { border-color: var(--danger); color: var(--danger); }
+.dl-btn .spinner { width: 14px; height: 14px; border-top-color: var(--moss); }
+
+/* offline: afsnit uden hentet lyd kan ikke spille — vis det frem for at love for meget */
+.episode.unreachable { opacity: 0.45; }
+.episode.unreachable .ep-thumb { cursor: default; }
+
+/* bulk-hentning øverst i køen */
+.bulkbar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; background: #eef4ef; border: 1px solid #dbe6dd; border-radius: 12px;
+  padding: 8px 12px; margin-bottom: 6px; }
+.bulk-text { font-size: 13px; color: var(--moss); }
+.bulk-actions { display: flex; align-items: center; gap: 6px; }
+.bulk-actions .ghost { background: #fff; font-size: 13px; }
+.bulk-progress { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+
+/* pladsforbrug i Hentet-fanen */
+.storage { margin-bottom: 14px; }
+.storage-track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.storage-fill { display: block; height: 100%; border-radius: 4px; background: var(--moss); }
+.storage-text { font-size: 12px; margin-top: 6px; }
+
 /* podcast/afsnit-detalje-header */
 .show-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px; padding-right: 30px; }
 .show-cover { width: 88px; height: 88px; border-radius: 12px; object-fit: cover; flex-shrink: 0; background: var(--sand); }

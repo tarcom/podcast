@@ -16,6 +16,9 @@ mod Podcast Index.
   kan sættes/fjernes manuelt (nødvendigt for link-ud-afsnit vi ikke selv afspiller).
 - **Sprogfilter** på søgeresultater (Dansk først / Kun dansk / Alle) + dansk-først discover.
 - **Tilføj via RSS-URL** — escape hatch til feeds Podcast Index ikke finder via søgning.
+- **Offline download** — ⬇ pr. afsnit, eller "Hent 5/10/20" øverst i køen før en tur. Hentede
+  afsnit ligger under fanen **Hentet** og kan afspilles og spoles helt uden dækning; app'en kan
+  også åbnes offline, og hørt/position gemmes lokalt og sendes når forbindelsen er tilbage.
 - **DR / Podimo m.fl.:** offentlige feeds afspilles/vises normalt. Afsnit uden afspillelig lydfil
   (paywall/app-only) får et "åbn hos udbyder"-link i stedet for en afspil-knap.
 
@@ -41,7 +44,7 @@ mod Podcast Index.
 ## Udvikling
 
 ```bash
-# Frontend (kræver Node 20+ — brug nvm; system-node på HTPC er 18)
+# Frontend (kræver Node 20+; HTPC har node 22 fra apt — ingen nvm)
 cd web && npm install && npm run dev
 # Backend lokalt
 cp api/config.example.php api/config.php   # udfyld Podcast Index-nøgler + MySQL
