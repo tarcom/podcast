@@ -3,6 +3,7 @@ import {
   addFavorite,
   addPodimoShow,
   discover,
+  episodeDescription,
   feedEpisodes,
   getCharts,
   getPodcast,
@@ -155,6 +156,10 @@ export default function App() {
 
   // explore
   const [query, setQuery] = useState('')
+  // Hvad `results` er et svar PÅ: '' = Udforsk-listen (discover), ellers søgeordet. Styrer
+  // rækkefølgen i Udforsk: har man søgt, skal træfferne stå ØVERST — top-50-listen skubbede dem
+  // før langt ned på siden, så man ikke kunne se hvad man havde søgt efter.
+  const [searchedFor, setSearchedFor] = useState('')
   const [langMode, setLangMode] = useState<LangMode>('da-first')
   const [results, setResults] = useState<Podcast[]>([])
   const [exploreBusy, setExploreBusy] = useState(false)
@@ -169,6 +174,7 @@ export default function App() {
 
   // episode detail ("læs mere")
   const [openEpisode, setOpenEpisode] = useState<EpisodeRow | null>(null)
+  const [descBusy, setDescBusy] = useState(false) // henter beskrivelsen (hørte afsnit får den ikke med i køen)
 
   // popularitet (Apples danske hitlister)
   const [chartShows, setChartShows] = useState<ChartShow[]>([])
@@ -273,7 +279,7 @@ export default function App() {
       flushOutbox(deviceId)
         .then((sent) => {
           setPending(outboxSize())
-          // serveren har nu vores lytning — hent køen igen så hørte afsnit forsvinder
+          // serveren har nu vores lytning — hent køen igen så hørt-markeringerne står rigtigt
           if (sent > 0) loadQueue()
         })
         .catch(() => setPending(outboxSize()))
@@ -302,19 +308,26 @@ export default function App() {
   }, [results.length])
 
   // ---------- explore ----------
-  const runSearch = useCallback(async () => {
-    const q = query.trim()
+  // Ét sted at søge fra, så alle indgange (søgefeltet, hitliste-klik, "ryd") sætter `searchedFor`
+  // og dermed også flytter træfferne op øverst i fanen.
+  const runSearchFor = useCallback(async (raw: string) => {
+    const q = raw.trim()
+    setQuery(raw)
     setExploreErr('')
     setExploreBusy(true)
     try {
       const res = q ? await search(q, 80) : await discover('da', 60)
       setResults(res)
+      setSearchedFor(q)
     } catch {
       setExploreErr('Søgning fejlede. Prøv igen om lidt.')
     } finally {
       setExploreBusy(false)
     }
-  }, [query])
+  }, [])
+
+  const runSearch = useCallback(() => runSearchFor(query), [runSearchFor, query])
+  const clearSearch = useCallback(() => runSearchFor(''), [runSearchFor])
 
   const addByUrl = useCallback(async () => {
     const url = urlInput.trim()
@@ -393,6 +406,32 @@ export default function App() {
       }
     },
     [deviceId],
+  )
+
+  // ---------- episode detail ("læs mere") ----------
+  // Hørte afsnit kommer uden `description` fra køen (den fylder ~halvdelen af payloaden), så
+  // teksten hentes her når pop-up'en faktisk åbnes — og patches ind i listerne, så den kun
+  // hentes én gang pr. afsnit.
+  const showEpisode = useCallback(
+    (ep: EpisodeRow) => {
+      setOpenEpisode(ep)
+      if (ep.description) return
+      setDescBusy(true)
+      episodeDescription(ep.feedId, ep.episodeId)
+        .then((desc) => {
+          if (!desc) return
+          setOpenEpisode((cur) => (cur && cur.episodeId === ep.episodeId ? { ...cur, description: desc } : cur))
+          const patch = (list: EpisodeRow[]) =>
+            list.map((e) => (e.episodeId === ep.episodeId ? { ...e, description: desc } : e))
+          setQueue(patch)
+          setDetailEpisodes(patch)
+        })
+        .catch(() => {
+          // offline eller fejl — pop-up'en viser bare "Ingen beskrivelse."
+        })
+        .finally(() => setDescBusy(false))
+    },
+    [],
   )
 
   // ---------- offline-download ----------
@@ -657,6 +696,83 @@ export default function App() {
 
   const unheardCount = queue.filter((e) => !e.playedAt).length
 
+  // ---------- Udforsk-blokke ----------
+  // Bygges her, fordi rækkefølgen skifter: uden søgning står hitlisten øverst (den er
+  // "forsiden" af Udforsk), men så snart man har søgt, skal træfferne være det første man ser.
+  const chartList = (
+    <ol className="chartlist">
+      {chartShows.map((s2) => (
+        <li key={s2.itunesId || s2.rank}>
+          <button
+            className="chart-item"
+            // slå op i Podcast Index på titlen, så den kan åbnes/følges som alle andre
+            onClick={() => { setTab('explore'); runSearchFor(s2.name) }}
+            title={`Nr. ${s2.rank} i Danmark — tryk for at finde den`}
+          >
+            <span className="chart-rank">{s2.rank}</span>
+            {s2.artwork ? <img src={s2.artwork} alt="" loading="lazy" /> : <span className="noimg" />}
+            <span className="chart-text">
+              <strong>{s2.name}</strong>
+              <span>{s2.artist}</span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
+  )
+
+  const chartsOpen = chartShows.length > 0 && (
+    <div className="charts">
+      <div className="charts-head">
+        <h3>🇩🇰 Mest populære i Danmark lige nu</h3>
+        <span className="muted">Apples top 50 · opdateres dagligt</span>
+      </div>
+      {chartList}
+    </div>
+  )
+
+  // Under en søgning er hitlisten ikke det man leder efter — den foldes sammen, så den ikke
+  // fylder 50 rækker under resultaterne, men stadig kan åbnes.
+  const chartsFolded = chartShows.length > 0 && (
+    <details className="charts charts-fold">
+      <summary>🇩🇰 Mest populære i Danmark lige nu <span className="muted">· Apples top 50</span></summary>
+      {chartList}
+    </details>
+  )
+
+  const searchResults = (
+    <div className="results">
+      {searchedFor && (
+        <div className="results-head">
+          <h3>
+            {exploreBusy
+              ? 'Søger…'
+              : `${orderedResults.length} ${orderedResults.length === 1 ? 'træffer' : 'træffere'} for “${searchedFor}”`}
+          </h3>
+          <button className="ghost" onClick={clearSearch} disabled={exploreBusy}>✕ Ryd søgning</button>
+        </div>
+      )}
+      {searchedFor && !exploreBusy && orderedResults.length === 0 && (
+        <p className="muted">
+          Ingen podcasts matchede “{searchedFor}”
+          {langMode === 'da-only' ? ' på dansk — prøv “Alle sprog” i menuen ved søgefeltet.' : '.'}
+        </p>
+      )}
+      <div className="grid">
+        {orderedResults.map((p) => (
+          <PodcastCard
+            key={p.id}
+            podcast={p}
+            starred={favIds.has(p.id)}
+            chartRank={rankForPodcast(p.title)}
+            onStar={() => toggleFavorite(p)}
+            onOpen={() => openDetail(p)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+
   // ---------- render ----------
   return (
     <div className="app">
@@ -733,54 +849,20 @@ export default function App() {
           </div>
           {exploreErr && <p className="error">{exploreErr}</p>}
 
-          {chartShows.length > 0 && (
-            <div className="charts">
-              <div className="charts-head">
-                <h3>🇩🇰 Mest populære i Danmark lige nu</h3>
-                <span className="muted">Apples top 50 · opdateres dagligt</span>
-              </div>
-              <ol className="chartlist">
-                {chartShows.map((s2) => (
-                  <li key={s2.itunesId || s2.rank}>
-                    <button
-                      className="chart-item"
-                      onClick={() => {
-                        // slå op i Podcast Index på titlen, så den kan åbnes/følges som alle andre
-                        setQuery(s2.name)
-                        setTab('explore')
-                        setExploreBusy(true)
-                        search(s2.name, 20)
-                          .then(setResults)
-                          .catch(() => setExploreErr('Kunne ikke slå podcasten op.'))
-                          .finally(() => setExploreBusy(false))
-                      }}
-                      title={`Nr. ${s2.rank} i Danmark — tryk for at finde den`}
-                    >
-                      <span className="chart-rank">{s2.rank}</span>
-                      {s2.artwork ? <img src={s2.artwork} alt="" loading="lazy" /> : <span className="noimg" />}
-                      <span className="chart-text">
-                        <strong>{s2.name}</strong>
-                        <span>{s2.artist}</span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            </div>
+          {/* Rækkefølgen afhænger af om man har søgt: har man, står træfferne ØVERST og
+              hitlisten foldes sammen nedenunder. Før lå top-50-listen altid først, så et
+              søgeresultat landede langt nede på siden — man kunne ikke se hvad man fandt. */}
+          {searchedFor ? (
+            <>
+              {searchResults}
+              {chartsFolded}
+            </>
+          ) : (
+            <>
+              {chartsOpen}
+              {searchResults}
+            </>
           )}
-
-          <div className="grid">
-            {orderedResults.map((p) => (
-              <PodcastCard
-                key={p.id}
-                podcast={p}
-                starred={favIds.has(p.id)}
-                chartRank={rankForPodcast(p.title)}
-                onStar={() => toggleFavorite(p)}
-                onOpen={() => openDetail(p)}
-              />
-            ))}
-          </div>
         </section>
       )}
 
@@ -805,7 +887,7 @@ export default function App() {
       {tab === 'queue' && (
         <section className="panel">
           <div className="panel-head">
-            <h2>Nyeste uhørte</h2>
+            <h2>Nyeste afsnit</h2>
             <button className="ghost" onClick={() => loadQueue().then(refreshFromFeeds)} disabled={loadingQueue || checkingFeeds}>
               {loadingQueue || checkingFeeds ? 'Opdaterer…' : 'Opdatér'}
             </button>
@@ -844,19 +926,31 @@ export default function App() {
           {queueLoaded && favorites.length === 0 && <p className="muted">Følg nogle podcasts, så samler vi de nyeste afsnit her.</p>}
           {queueLoaded && favorites.length > 0 && unheardCount === 0 && !checkingFeeds && <p className="muted">Alt er hørt 🎉</p>}
 
-          {/* Afsnit man er i gang med bliver liggende i deres egen dag-gruppe (kronologien er
-              pointen) — de markeres i stedet på selve rækken, se `.episode.continuing`. */}
-          {groupByDay(queue.filter((e) => !e.playedAt)).map((g) => (
+          {/* Hele kronologien vises — også de HØRTE afsnit (2026-08-21). De forsvandt før ud af
+              listen, så man mistede overblikket over hvad man havde lyttet til; nu bliver de
+              liggende på deres plads og er tonet ned med et "✓ Hørt"-mærkat (`.episode.heard`).
+              Afsnit man er midt i markeres på samme måde med `.episode.continuing`. */}
+          {groupByDay(queue).map((g) => (
             <div className="daygroup" key={g.key}>
               <div className="day-head">
-                <h3>{g.label}</h3>
-                <button
-                  className="clear-below"
-                  onClick={() => { if (confirm(`Markér "${g.label}" og alt ældre som hørt?`)) clearBelow(g.episodes[g.episodes.length - 1].publishedAt) }}
-                  title="Markér denne dag og alt ældre som hørt"
-                >
-                  ✓ ryd herunder
-                </button>
+                <h3>
+                  {g.label}
+                  {g.episodes.some((e) => e.playedAt) && (
+                    <span className="day-count">
+                      {g.episodes.filter((e) => !e.playedAt).length} af {g.episodes.length} uhørte
+                    </span>
+                  )}
+                </h3>
+                {/* Knappen giver kun mening hvis der ER noget uhørt på dagen eller ældre */}
+                {queue.some((e) => !e.playedAt && e.publishedAt <= g.episodes[g.episodes.length - 1].publishedAt) && (
+                  <button
+                    className="clear-below"
+                    onClick={() => { if (confirm(`Markér "${g.label}" og alt ældre som hørt?`)) clearBelow(g.episodes[g.episodes.length - 1].publishedAt) }}
+                    title="Markér denne dag og alt ældre som hørt"
+                  >
+                    ✓ ryd herunder
+                  </button>
+                )}
               </div>
               <ul className="episodes">
                 {g.episodes.map((ep) => (
@@ -872,7 +966,7 @@ export default function App() {
                     offline={!online}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
-                    onInfo={() => setOpenEpisode(ep)}
+                    onInfo={() => showEpisode(ep)}
                     onDownload={() => startDownload(ep)}
                     onRemoveDownload={() => dropDownload(ep)}
                   />
@@ -923,7 +1017,7 @@ export default function App() {
                   offline={!online}
                   onPlay={() => playEpisode(d.ep)}
                   onToggleHeard={() => markHeard(d.ep, !d.ep.playedAt)}
-                  onInfo={() => setOpenEpisode(d.ep)}
+                  onInfo={() => showEpisode(d.ep)}
                   onDownload={() => startDownload(d.ep)}
                   onRemoveDownload={() => dropDownload(d.ep)}
                 />
@@ -975,7 +1069,7 @@ export default function App() {
                     offline={!online}
                     onPlay={() => playEpisode(ep)}
                     onToggleHeard={() => markHeard(ep, !ep.playedAt)}
-                    onInfo={() => setOpenEpisode(ep)}
+                    onInfo={() => showEpisode(ep)}
                     onDownload={() => startDownload(ep)}
                     onRemoveDownload={() => dropDownload(ep)}
                   />
@@ -1029,9 +1123,13 @@ export default function App() {
                 </button>
               </div>
             )}
-            {openEpisode.description
-              ? <div className="show-desc" dangerouslySetInnerHTML={{ __html: openEpisode.description }} />
-              : <p className="muted">Ingen beskrivelse.</p>}
+            {openEpisode.description ? (
+              <div className="show-desc" dangerouslySetInnerHTML={{ __html: openEpisode.description }} />
+            ) : descBusy ? (
+              <p className="muted">Henter beskrivelse…</p>
+            ) : (
+              <p className="muted">Ingen beskrivelse.</p>
+            )}
           </div>
         </div>
       )}
@@ -1196,6 +1294,7 @@ function EpisodeItem({
       <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
         <span className="ep-meta">
+          {heard && <em className="heard-chip" title="Du har hørt dette afsnit — tryk ✓ for at markere det uhørt igen">✓ Hørt</em>}
           {started && <em className="cont-chip" title="Du er i gang med dette afsnit">▶ Fortsætter</em>}
           {chartRank && (
             <em className="hot" title={`Nr. ${chartRank} på Apples trending-afsnit i Danmark lige nu`}>

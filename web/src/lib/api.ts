@@ -138,9 +138,17 @@ export async function removeFavorite(deviceId: string, feedId: number): Promise<
 
 // --- Episodes ---
 // Køen fra cachen. Rører ikke nettet på serveren → svarer på ~80 ms.
+// NB: hørte afsnit kommer med i køen (de beholder deres plads i listen), men UDEN
+// `description` — den fylder ~halvdelen af payloaden. Hent den ved behov med episodeDescription().
 export async function newestEpisodes(deviceId: string): Promise<EpisodeRow[]> {
   const { data } = await apiGet({ action: 'episodes.newest', deviceId })
   return (data.items || []).map(normalizeEpisodeRow)
+}
+
+// Beskrivelsen for ét afsnit — bruges af "læs mere" når køen ikke sendte den med (hørte afsnit).
+export async function episodeDescription(feedId: number, episodeId: number): Promise<string> {
+  const { data } = await apiGet({ action: 'episode.get', feedId, id: episodeId })
+  return data && data.item ? s((data.item as RawRecord).description) : ''
 }
 
 // Den langsomme del: serveren henter forældede feeds' RSS (1-3 sek.). Kaldes FØRST når køen er

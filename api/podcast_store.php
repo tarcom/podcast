@@ -162,15 +162,20 @@ function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $device
 /**
  * Episodes across all of the device's favorites, newest first, with per-device played/position state.
  *
- * Køen viser kun UHØRTE afsnit, men hentede før alle 200 nyeste og smed de hørte væk i browseren:
- * målt 2026-08-10 var 132 af 200 rækker hørte = 201 KB af en 298 KB payload sendt til ingen nytte.
- * `$unheardOnly` skærer dem fra i en ydre forespørgsel, så vinduet stadig er "de 200 nyeste
- * afsnit" (ikke "de 200 nyeste uhørte") — ellers ville ældre afsnit pludselig dukke op i køen.
+ * Køen viser SIDEN 2026-08-21 også de HØRTE afsnit — de bliver liggende på deres kronologiske
+ * plads og markeres som hørt i stedet for at forsvinde. Derfor er den gamle `$unheardOnly`-
+ * filtrering væk igen.
+ *
+ * Men payload-lærdommen fra 2026-08-10 holder: `description` er ~49 % af svaret, og de hørte
+ * rækker er flertallet (målt 82 af 200). Beskrivelsen sendes derfor **kun for uhørte** afsnit;
+ * "læs mere" på et hørt afsnit henter den ved behov via `episode.get` (podcast_episode()).
  */
-function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200, bool $unheardOnly = true): array
+function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200): array
 {
-    $inner =
-        'SELECT e.feed_id, e.episode_id, e.title, e.description, e.published_at, e.audio_url,
+    $sql =
+        'SELECT e.feed_id, e.episode_id, e.title,
+                CASE WHEN st.played_at IS NULL THEN e.description ELSE NULL END AS description,
+                e.published_at, e.audio_url,
                 e.link_url, e.image, e.duration_sec,
                 f.title AS podcast_title, f.image AS podcast_image,
                 st.played_at, st.position_sec, st.updated_at
@@ -180,17 +185,27 @@ function podcast_newest_episodes(PDO $pdo, string $deviceId, int $limit = 200, b
          ORDER BY e.published_at DESC
          LIMIT ' . (int) $limit;
 
-    // FÆLDE: den ydre forespørgsel SKAL sortere igen. MariaDB bruger kun den indre `ORDER BY` til
-    // at afgøre hvilke rækker `LIMIT` beholder — rækkefølgen ud af en afledt tabel er udefineret,
-    // og køen kom faktisk blandet ud (9 brud på 65 rækker), så dag-grupperne gentog sig selv.
-    $sql = $unheardOnly
-        ? 'SELECT * FROM (' . $inner . ') q WHERE q.played_at IS NULL ORDER BY q.published_at DESC'
-        : $inner;
-
     $stmt = $pdo->prepare($sql);
     $stmt->bindValue('dev', $deviceId);
     $stmt->execute();
     return $stmt->fetchAll();
+}
+
+/**
+ * Ét afsnits beskrivelse (PK-opslag på feed_id+episode_id).
+ * Findes fordi køen udelader beskrivelsen på hørte afsnit, se ovenfor.
+ */
+function podcast_episode(PDO $pdo, int $feedId, int $episodeId): ?array
+{
+    $stmt = $pdo->prepare(
+        'SELECT feed_id, episode_id, description FROM podcast_episodes
+         WHERE feed_id = :feed AND episode_id = :ep LIMIT 1'
+    );
+    $stmt->bindValue('feed', $feedId, PDO::PARAM_INT);
+    $stmt->bindValue('ep', $episodeId, PDO::PARAM_INT);
+    $stmt->execute();
+    $row = $stmt->fetch();
+    return $row ?: null;
 }
 
 /** Episodes for a single feed, newest first, with state. Refreshes that feed if stale. */

@@ -292,6 +292,18 @@ try {
             $pdo = db($config);
             json_response(['status' => true, 'items' => podcast_newest_episodes($pdo, $deviceId)]);
 
+        // Ét afsnits beskrivelse. Køen sender ikke beskrivelser med for HØRTE afsnit (de er
+        // flertallet af rækkerne og ~halvdelen af payloaden), så "læs mere" på et hørt afsnit
+        // henter teksten her — ét PK-opslag, kun når pop-up'en faktisk åbnes.
+        case 'episode.get':
+            $feedId = isset($_GET['feedId']) ? (int) $_GET['feedId'] : 0;
+            $episodeId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+            if ($feedId <= 0 || $episodeId <= 0) {
+                json_response(['status' => false, 'error' => 'feedId and id are required'], 422);
+            }
+            $pdo = db($config);
+            json_response(['status' => true, 'item' => podcast_episode($pdo, $feedId, $episodeId)]);
+
         // Den langsomme halvdel: hent forældede favoritters RSS (0,15-0,38 sek. pr. feed, op til 8).
         // Svarer med hvor meget der reelt kom ind, så frontenden kun genhenter køen når der ER nyt.
         case 'episodes.refresh':

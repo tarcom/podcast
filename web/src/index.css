@@ -102,6 +102,17 @@ button:disabled { opacity: 0.6; cursor: default; }
 .charts-head .muted { font-size: 12px; }
 .chartlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px;
              grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+/* Har man søgt, foldes hitlisten sammen og lægger sig UNDER træfferne */
+.charts-fold > summary { cursor: pointer; font-family: 'Fraunces', serif; font-size: 17px;
+  color: var(--moss-dark); margin-bottom: 8px; list-style-position: inside; }
+.charts-fold > summary .muted { font-family: 'Manrope', sans-serif; font-size: 12px; }
+
+/* søgeresultater — står øverst i Udforsk så snart der er søgt på noget */
+.results-head { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin: 4px 0 10px; }
+.results-head h3 { font-family: 'Fraunces', serif; font-size: 17px; color: var(--moss-dark); }
+.results .muted { margin-bottom: 10px; }
+.results + .charts, .results + .charts-fold { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
 .chart-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 6px 8px; background: none;
               border: none; border-radius: 10px; text-align: left; font: inherit; cursor: pointer; }
 .chart-item:hover { background: #eef4ef; }
@@ -121,7 +132,15 @@ button:disabled { opacity: 0.6; cursor: default; }
 .episodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .episode { display: flex; align-items: center; gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--line); }
 .episode:last-child { border-bottom: none; }
-.episode.heard { opacity: 0.5; }
+/* Hørte afsnit BLIVER liggende i køen (2026-08-21) — de skal være tydeligt afspillede, men må
+   ikke stjæle opmærksomhed fra de uhørte: tonet ned, gråt cover og et "✓ Hørt"-mærkat. Derfor
+   ikke bare `opacity: 0.5` længere; titlen skal stadig kunne læses i en lang liste. */
+.episode.heard { opacity: 0.72; background: #f6f4ec; }
+.episode.heard .ep-thumb img { filter: grayscale(1); }
+.episode.heard .ep-text strong { color: var(--muted); font-weight: 500; }
+.heard-chip { font-style: normal; font-weight: 700; font-size: 10px; letter-spacing: 0.03em;
+  text-transform: uppercase; color: #fff; background: var(--ok); border-radius: 5px;
+  padding: 1px 5px; margin-right: 6px; }
 .episode.current { background: #eef4ef; border-radius: 10px; }
 /* episode thumbnail (billede i stedet for play-symbol; klik = afspil) */
 .ep-thumb { position: relative; width: 52px; height: 52px; border-radius: 10px; border: none; padding: 0; background: var(--sand); cursor: pointer; flex-shrink: 0; overflow: hidden; }
@@ -156,7 +175,10 @@ button:disabled { opacity: 0.6; cursor: default; }
 /* dag-grupper i køen */
 .daygroup { margin-bottom: 8px; }
 .day-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 2px; }
-.day-head h3 { font-family: 'Fraunces', serif; font-size: 15px; color: var(--moss); text-transform: capitalize; }
+.day-head h3 { font-family: 'Fraunces', serif; font-size: 15px; color: var(--moss); text-transform: capitalize;
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* "3 af 7 uhørte" — kun på dage hvor noget allerede er hørt, så overskriften ellers står ren */
+.day-count { font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: none; }
 
 /* "Fortsætter" — afsnit man er midt i. De bliver liggende på deres kronologiske plads i
    dag-grupperne (2026-08-10, før havde de en egen boks øverst); markeringen sidder derfor på

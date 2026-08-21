@@ -397,12 +397,11 @@ unheardCount === 0` var sandt → tom-tilstanden blev tegnet. Selve SQL'en er ~8
 - **Tom-tilstanden må ikke gætte.** Ny `queueLoaded`-state: en tom kø betyder kun "alt er hørt"
   når vi rent faktisk **har** hentet den. Under load vises "Henter køen…", og over listen en
   spinner (`.feedcheck`) mens `episodes.refresh` arbejder — cachen står bag den imens.
-- **Payload halveret+.** Køen viser kun uhørte, men hentede alle 200 nyeste: målt **132 af 200
-  rækker hørte = 201 KB af 298 KB** sendt til ingen nytte (`description` alene er 49 %).
-  `podcast_newest_episodes($unheardOnly=true)` filtrerer dem fra i en **ydre** forespørgsel, så
-  vinduet stadig er "de 200 nyeste afsnit" og ikke "de 200 nyeste uhørte" — ellers ville gamle
-  afsnit pludselig dukke op i køen. Resultat: 200 → 65 rækker, 298 → 94 KB (25 KB gzippet).
-  **FÆLDE der slap igennem til produktion i ti minutter:** den ydre forespørgsel **skal** have sin
+- **Payload skåret ned.** Køen hentede alle 200 nyeste rækker med alt indhold: målt **132 af 200
+  rækker hørte = 201 KB af 298 KB** (`description` alene er 49 %). Selve bortfiltreringen af hørte
+  rækker er rullet tilbage 2026-08-21 — køen viser dem igen, se afsnittet nedenfor — men
+  beskrivelsen udelades stadig for hørte afsnit.
+  **FÆLDE fra dengang, hvis du genindfører en ydre forespørgsel:** den **skal** have sin
   egen `ORDER BY`. MariaDB bruger kun den indre `ORDER BY` til at afgøre hvilke rækker `LIMIT`
   beholder — rækkefølgen *ud af* en afledt tabel er udefineret. Køen kom blandet ud (9 brud på 65
   rækker), hvilket viste sig som **gentagne dag-overskrifter** ("Onsdag" efter "03. August").
@@ -421,6 +420,39 @@ dag-gruppe (det er kronologien der er pointen), og markeres i stedet på **selve
 af samme `isInProgress()`. Dag-grupperne filtrerer ikke længere in-progress-afsnit fra.
 NB: "✓ ryd herunder" tog allerede in-progress-afsnit med (den filtrerer på `playedAt`, ikke på
 visningen), så adfærden er uændret der.
+
+## Køen viser nu også HØRTE afsnit (2026-08-21)
+Hørte afsnit forsvandt før ud af køen. Nu bliver de liggende på deres **kronologiske plads** og
+markeres i stedet: `.episode.heard` (tonet ned, gråtonet cover, dæmpet titel) + et grønt
+**"✓ Hørt"**-mærkat i meta-linjen. Dag-overskriften viser "**X af Y uhørte**" på dage hvor noget er
+hørt, og "✓ ryd herunder" skjules på dage hvor der ikke er noget uhørt tilbage (hverken den dag
+eller ældre). `groupByDay(queue)` får hele køen — ikke `queue.filter(!playedAt)` som før.
+- **`$unheardOnly` er væk fra `podcast_newest_episodes()`**; vinduet er igen "de 200 nyeste afsnit".
+- **Men payload-lærdommen holder:** `description` sendes **kun for uhørte** rækker
+  (`CASE WHEN st.played_at IS NULL THEN e.description ELSE NULL END`). Målt live efter deploy:
+  200 rækker = **278 KB** mod 212 KB for de 118 uhørte alene — uden det trick ~360 KB.
+- **"Læs mere" på et hørt afsnit henter teksten ved behov:** nyt endpoint **`episode.get`**
+  (`&feedId=&id=` → `podcast_episode()`, PK-opslag), frontend `episodeDescription()` +
+  `showEpisode()` i App.tsx. Svaret patches ind i `queue`/`detailEpisodes`, så det kun hentes én
+  gang pr. afsnit; imens står der "Henter beskrivelse…". Offline fejler kaldet stille, og pop-up'en
+  viser "Ingen beskrivelse."
+- Alt andet regner stadig på `!playedAt`: uhørt-tælleren, fane-badget, auto-videre, bulk-hentning
+  og "ryd herunder" — adfærden der er uændret.
+- Verificeret i rigtig Chrome mod den live side: 200 rækker, 82 hørte spredt **mellem** de uhørte,
+  82 "Hørt"-mærkater, og beskrivelsen hentet efter klik på et hørt afsnit.
+
+## Udforsk: søgetræffere ØVERST (2026-08-21)
+Hitlisten (Apples top 50) lå altid før resultat-gitteret, så et søgeresultat landede ~3.100 px nede
+på en telefon — man kunne ikke se hvad man havde fundet. Nu styrer **`searchedFor`** (hvad
+`results` er et svar *på*; `''` = discover-listen) rækkefølgen:
+- **Har man søgt:** træfferne står lige under søgefeltet med overskriften "N træffere for “…”" +
+  **✕ Ryd søgning**, og hitlisten foldes sammen nedenunder (`<details class="charts charts-fold">`).
+  Målt efter deploy: første kort på **y=380**, hitlisten på y=742, sidehøjde 943 px mod ~3.100 før.
+- **Uden søgning:** som før — hitlisten øverst, discover-gitteret under.
+- Alle indgange går gennem **`runSearchFor()`** (søgeknap/Enter, klik på hitlisten, "ryd"), så
+  `searchedFor` aldrig kan komme ud af trit med `results`. Tom søgning = discover igen.
+- Tomt resultat siger det nu ("Ingen podcasts matchede …") og foreslår "Alle sprog" hvis
+  sprogfiltret står på **Kun dansk** — ellers ligner et bortfiltreret resultat en fejl.
 
 ## Recommendations (ønsket, ikke bygget)
 Bruger vil have forslag baseret på favoritter. Kan gøres via Podcast Index-kategorier på favoritter
