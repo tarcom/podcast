@@ -91,6 +91,9 @@ button:disabled { opacity: 0.6; cursor: default; }
 .card-text span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-text .da { display: inline-block; margin-top: 3px; font-size: 11px; font-style: normal; color: var(--moss); background: #e6efe6; border-radius: 6px; padding: 0 6px; }
 .card-tags { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+/* DR TV-serie: kan ikke afspilles i appen, kun ses hos DR — mærkatet skal være til at se på afstand */
+.card-text .tv { display: inline-block; margin-top: 3px; font-size: 11px; font-style: normal; font-weight: 700;
+  color: #fff; background: #1a5fb4; border-radius: 6px; padding: 0 6px; }
 /* placering på Apples danske top-50 */
 .rank { display: inline-block; margin-top: 3px; font-size: 11px; font-style: normal; font-weight: 700;
         color: #fff; background: var(--terracotta); border-radius: 6px; padding: 0 6px; }
@@ -163,6 +166,8 @@ button:disabled { opacity: 0.6; cursor: default; }
   padding: 1px 6px; border-radius: 6px; margin-right: 6px; background: #e6efe6; color: var(--moss); vertical-align: 1px; }
 .src-podimo { background: #efe4fb; color: #6b3fb5; }
 .src-dr { background: #e0ecfb; color: #1a5fb4; }
+/* DR TV — fuld farve, så et TV-program aldrig forveksles med et afsnit man kan afspille */
+.src-dr-tv { background: #1a5fb4; color: #fff; }
 
 /* link-out pop-up (Podimo/DR: kan ikke afspilles i appen) */
 .linkout { margin: 4px 0 14px; padding: 14px; border-radius: 14px; background: #fbf4e9; border: 1px solid var(--line); }

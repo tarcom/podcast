@@ -70,6 +70,13 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
         return 0;
     }
     $feedUrl = trim((string) ($fav['feed_url'] ?? ''));
+    // DR TV-serier hentes fra dr-massive-API'et og gemmes som link-out (se drtv.php). Betingelsen
+    // hænger på URL'en, ikke på `added_via`, så en serie tilføjet med "indsæt URL" (added_via =
+    // 'url') opfører sig som en der er fulgt fra søgningen.
+    if (drtv_path_from_url($feedUrl) !== null) {
+        $res = drtv_refresh_feed($pdo, $feedId, $feedUrl);
+        return $res === null ? 0 : (int) $res['inserted'];
+    }
     if ($feedUrl === '') {
         $feedUrl = podcast_backfill_feed_url($config, $pdo, $deviceId, $feedId);
     }

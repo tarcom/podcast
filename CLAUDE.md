@@ -298,8 +298,8 @@ Faldgruber der er håndteret, og som du ikke må rulle tilbage:
   så to uger uden dækning ville nulstille alt. Alle skrivninger går gennem `saveStateResilient()`,
   som lægger dem i en udbakke (én post pr. afsnit, nyeste felt vinder) og sender dem på
   `online`-hændelsen. Derefter genhentes køen, så hørte afsnit forsvinder.
-- **Auto-videre springer afsnit over der ikke er hentet, når man er offline** — ellers stopper
-  lytningen bare med en fejl ved næste afsnit.
+- (Auto-videre havde en offline-regel om kun at hoppe til hentede afsnit. Den er væk sammen med
+  auto-videre selv, 2026-08-22 — app'en stopper nu altid efter et afsnit.)
 - `navigator.storage.persist()` kaldes ved første download; uden den må Android smide filerne væk.
 
 **Sådan testes det uden at deploye** (service workers kræver HTTPS *eller* localhost):
@@ -335,7 +335,7 @@ eksklusive). Løsning = **link-out** (besked om nye afsnit + "↗ åbn hos Podim
   (`↗`). **Regex-delimiter:** brug `~...~` ikke `#...#` (mønstret har `#` i `[^/?#]`).
   On-open PI-refresh (`podcast_store.php`) springer `added_via='podimo'` over.
 - Seedet+verificeret: Her Går Det Godt + Casper ringer til Frank (15 afsnit hver, link-out i køen).
-  **Note:** Podimo-afsnit uden `audio_url` kan ikke afspilles/auto-videre — kun link-out.
+  **Note:** Podimo-afsnit uden `audio_url` kan ikke afspilles — kun link-out.
 
 ## Link-out UX + kilde-mærkater (2026-07-27)
 - **Kilde-mærkat** pr. afsnit (App.tsx `sourceOf`): udledt af lyd-/link-domænet (Podimo/DR/Acast/
@@ -436,8 +436,8 @@ eller ældre). `groupByDay(queue)` får hele køen — ikke `queue.filter(!playe
   `showEpisode()` i App.tsx. Svaret patches ind i `queue`/`detailEpisodes`, så det kun hentes én
   gang pr. afsnit; imens står der "Henter beskrivelse…". Offline fejler kaldet stille, og pop-up'en
   viser "Ingen beskrivelse."
-- Alt andet regner stadig på `!playedAt`: uhørt-tælleren, fane-badget, auto-videre, bulk-hentning
-  og "ryd herunder" — adfærden der er uændret.
+- Alt andet regner stadig på `!playedAt`: uhørt-tælleren, fane-badget, bulk-hentning og
+  "ryd herunder" — adfærden der er uændret.
 - Verificeret i rigtig Chrome mod den live side: 200 rækker, 82 hørte spredt **mellem** de uhørte,
   82 "Hørt"-mærkater, og beskrivelsen hentet efter klik på et hørt afsnit.
 
@@ -462,8 +462,7 @@ mens Castbox bliver stående i timevis; (2) i Teslaen kan man kun pause/afspille
   Biler sender kun AVRCP-kommandoer over Bluetooth, og **der findes ingen "spol 30 sek."-kommando**
   — rattet/skærmen sender "næste/forrige nummer". Derfor er de to knapper bundet til `skip()`
   ligesom ↻30/↺10 i appen. **Konsekvens:** man kan ikke længere springe til næste afsnit fra
-  bilen (auto-videre ved afsnittets slutning kører stadig). Vil man have springet tilbage, er det
-  `nexttrack` → `onEnded()` igen. `seekforward`/`seekbackward` (hold nede) peger på de samme ±30/−10.
+  bilen. Vil man have springet tilbage, er det `nexttrack` → et "spil næste"-kald igen. `seekforward`/`seekbackward` (hold nede) peger på de samme ±30/−10.
 - **`setPositionState()`** kaldes ved start/pause/spol/metadata (`syncPositionState()`), så bilens
   og låseskærmens tidslinje viser forløbet tid og varighed. `playbackState` sættes nu eksplicit —
   ellers ville keep-alive nedenfor få systemet til at tro der stadig afspilles.
@@ -489,6 +488,45 @@ mens Castbox bliver stående i timevis; (2) i Teslaen kan man kun pause/afspille
   (Indstillinger → Apps → Chrome → Batteri), ellers dræber Android baggrundsprocessen uanset hvad
   app'en gør. Androids "medie-genoptagelse" (den chip der bliver liggende efter en app er lukket)
   kræver en `MediaBrowserService` og kan **ikke** lade sig gøre fra web.
+
+## Ingen auto-videre: app'en stopper efter hvert afsnit (2026-08-22)
+Bruger-beslutning: **app'en må aldrig selv starte det næste afsnit.** `onEnded` markerer afsnittet
+hørt, pauser lyden, stopper keep-alive og rydder afspilleren — den leder ikke længere efter "næste
+uhørte". Rul det ikke tilbage uden at spørge.
+
+## DR TV som link-out (2026-08-22)
+Debatten og Deadline (og alt andet i DRTV) kan nu følges som en podcast. Video kan **ikke**
+afspilles i appen — afsnittene gemmes uden `audio_url` med `link_url` til dr.dk, så frontendens
+eksisterende link-out-visning (↗ + pop-up) bruges uændret. `api/drtv.php` er hele integrationen.
+
+- **API'et (sniffet i browseren, ingen login nødvendig):** vært **`prod95-cdn.dr-massive.com`**
+  (fra DRTV-sidens egen `env.CLIENT_SERVICE_CDN_URL`). To endpoints er nok:
+  `/api/v2/search?term=…` og `/api/page?path=/serie/<slug>_<id>`.
+  **Tre fælder:** `sub` skal være **`Anonymous2`** (`Anonymous` giver 401); søgningen kræver en
+  vilkårlig **`sessionId`** (UUID), ellers 400; og den gamle vært `production-cdn.dr-massive.com`
+  svarer 401 på alt. Svaret er gzip'et — husk `CURLOPT_ENCODING => ''`.
+- **Datoen ligger i `customFields.AvailableFrom`** (UTC ISO). Afsnittene har hverken
+  `broadcastDate` eller `releaseDate`, så uden det felt ville alt lande i "Uden dato" i køen.
+  Afsnit med en dato i fremtiden springes over.
+- **Serie-siden svarer med den AKTUELLE sæson** i `item.episodes.items` (Debatten 19, Deadline 16).
+  Det er "hvad er nyt", præcis som DR Lyd-integrationen — ingen paginering, ingen gamle sæsoner.
+- **Id'er:** `feed_id = -crc32('drtv:' + show-sti)` (negativ som Podimos, kolliderer aldrig med
+  Podcast Index' positive id'er) og `episode_id = rss_stable_id('drtv:' + DRTV's numeriske id)`
+  (deterministisk → hørt-tilstand overlever en genindlæsning). Show-stien (`/serie/deadline_7111`)
+  er nøglen, **ikke** sæson-stien, så søgning og "tilføj via URL" giver samme feed.
+- **Opdatering kræver ingen scraper og ingen cron:** one.com kan selv nå dr-massive (verificeret
+  live). `podcast_refresh_feed()` vælger DR TV-vejen ud fra **feed-URL'en** (`dr.dk/drtv`), ikke
+  ud fra `added_via`, så en serie tilføjet via URL-boksen opfører sig som en fulgt fra søgningen.
+- **Søgningen i Udforsk henter DR TV parallelt med Podcast Index** og lægger TV-træfferne
+  **øverst** (få og præcise mod PI's snesevis). Fejler DR, vises kun podcastene.
+- **Markering:** feed-objektet har `kind: 'tv'` → blåt **📺 TV**-mærkat på kortet (også i
+  Favoritter, via `added_via='drtv'`), og hvert afsnit får et **📺 DR TV**-mærkat + "ses hos DR TV".
+  Frontenden kender TV-afsnit på `link_url` (`/drtv/`), se `isTvEpisode()`.
+- **`episodes.feed` accepterer nu negative feed-id'er** — før afviste den dem med 422, så hverken
+  Podimo-shows eller TV-serier kunne åbnes fra Favoritter.
+- **Bemærk sæson-hullet:** Debattens sæson sluttede 11. juni, så serien har ingen afsnit inden for
+  køens vindue (de 200 nyeste) før den nye sæson går i gang. Afsnittene ligger der — de ses ved at
+  åbne serien under Favoritter. Deadline sender dagligt og fylder derfor i køen med det samme.
 
 ## Recommendations (ønsket, ikke bygget)
 Bruger vil have forslag baseret på favoritter. Kan gøres via Podcast Index-kategorier på favoritter

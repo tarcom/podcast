@@ -55,6 +55,7 @@ function normalizePodcast(feed: RawRecord): Podcast {
     url: s(feed.link),
     description: s(feed.description),
     categories: cats,
+    kind: feed.kind === 'tv' ? 'tv' : undefined,
   }
 }
 

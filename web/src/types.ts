@@ -8,6 +8,7 @@ export type Podcast = {
   url?: string
   description?: string
   categories?: string[]
+  kind?: 'tv' // sat af backendens DR TV-søgning; alt andet er podcast
 }
 
 // A cached episode joined with this device's played/position state.

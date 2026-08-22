@@ -113,7 +113,12 @@ const SOURCE_NAMES: [string, string][] = [
   ['libsyn', 'Libsyn'], ['buzzsprout', 'Buzzsprout'], ['simplecast', 'Simplecast'],
   ['podbean', 'Podbean'], ['spotify', 'Spotify'], ['anchor', 'Spotify'], ['omny', 'Omny'],
 ]
+// TV-afsnit kendes på link-URL'en (dr.dk/drtv/...) — de har aldrig lyd i appen.
+function isTvEpisode(ep: EpisodeRow): boolean {
+  return (ep.linkUrl || '').includes('/drtv/')
+}
 function sourceOf(ep: EpisodeRow): string {
+  if (isTvEpisode(ep)) return 'DR TV'
   const u = ep.linkUrl || ep.audioUrl || ''
   try {
     const h = new URL(u).hostname.replace(/^www\./, '')
@@ -122,6 +127,20 @@ function sourceOf(ep: EpisodeRow): string {
     return sld.charAt(0).toUpperCase() + sld.slice(1)
   } catch {
     return ''
+  }
+}
+
+// En favorit tegnes med samme kort som et søgeresultat. `addedVia` bærer TV-mærkatet videre,
+// så en fulgt DR TV-serie også er mærket i Favoritter.
+function favoriteAsPodcast(f: Favorite): Podcast {
+  return {
+    id: f.feedId,
+    title: f.title,
+    image: f.image,
+    author: f.author,
+    language: f.language,
+    feedUrl: f.feedUrl,
+    kind: f.addedVia === 'drtv' || (f.feedUrl || '').includes('/drtv/') ? 'tv' : undefined,
   }
 }
 
@@ -354,7 +373,7 @@ export default function App() {
         setExploreErr('Ingen podcast fundet på den URL (Podcast Index kender den ikke).')
         return
       }
-      await addFavorite(deviceId, p, 'url')
+      await addFavorite(deviceId, p, p.kind === 'tv' ? 'drtv' : 'url')
       setUrlInput('')
       await loadFavorites()
       // Et nyt feed har ingen cache endnu, så køen skal have fat i RSS'et for at vise noget.
@@ -382,7 +401,9 @@ export default function App() {
       if (favIds.has(p.id)) {
         await removeFavorite(deviceId, p.id)
       } else {
-        await addFavorite(deviceId, p, 'search')
+        // 'drtv' gør at favoritten kan mærkes som TV bagefter; selve opdateringen af afsnit
+        // hænger på feed-URL'en, ikke på dette felt.
+        await addFavorite(deviceId, p, p.kind === 'tv' ? 'drtv' : 'search')
       }
       await loadFavorites()
       await loadQueue()
@@ -570,21 +591,19 @@ export default function App() {
     [queue, deviceId, persistState],
   )
 
+  // Slut på et afsnit = stop. Ingen auto-videre (fravalgt 2026-08-22): app'en skal aldrig selv
+  // begynde på det næste afsnit — man vælger selv hvad der skal spilles.
   const onEnded = useCallback(async () => {
     if (!current) return
+    // Stop lyden helt: uden det ville elementet spille videre hvis `ended` kom uden at
+    // afspilningen faktisk var slut, mens afspilleren i bunden allerede var ryddet.
+    audioRef.current?.pause()
+    stopKeepAlive() // afsnittet er slut — der er ikke noget at holde i live
     await persistState({ episodeId: current.episodeId, feedId: current.feedId, played: true })
     setQueue((list) => list.map((e) => (e.episodeId === current.episodeId ? { ...e, playedAt: new Date().toISOString() } : e)))
-    // auto-continue: næste uhørte, afspillelige afsnit. Uden dækning nytter det ikke at hoppe
-    // til et afsnit der ikke er hentet — så ville lytningen bare stoppe med en fejl.
-    const usable = (e: EpisodeRow) =>
-      !e.playedAt && !!e.audioUrl && e.episodeId !== current.episodeId && (online || dlIds.has(e.episodeId))
-    const next = queue.find(usable) || (online ? undefined : downloads.map((d) => d.ep).find(usable))
-    if (next) playEpisode(next)
-    else {
-      setPlaying(false)
-      setCurrent(null)
-    }
-  }, [current, persistState, queue, playEpisode, online, dlIds, downloads])
+    setPlaying(false)
+    setCurrent(null)
+  }, [current, persistState])
 
   const onTimeUpdate = useCallback(() => {
     const el = audioRef.current
@@ -911,7 +930,7 @@ export default function App() {
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addByUrl()}
-              placeholder="…eller indsæt RSS-URL eller Podimo show-URL"
+              placeholder="…eller indsæt RSS-, Podimo- eller DR TV-URL"
             />
             <button onClick={addByUrl} disabled={exploreBusy}>
               Tilføj
@@ -943,10 +962,10 @@ export default function App() {
             {favorites.map((f) => (
               <PodcastCard
                 key={f.feedId}
-                podcast={{ id: f.feedId, title: f.title, image: f.image, author: f.author, language: f.language }}
+                podcast={favoriteAsPodcast(f)}
                 starred
                 chartRank={rankForPodcast(f.title)}
-                onStar={() => toggleFavorite({ id: f.feedId, title: f.title, image: f.image, author: f.author, language: f.language })}
+                onStar={() => toggleFavorite(favoriteAsPodcast(f))}
                 onOpen={() => openDetail(f)}
               />
             ))}
@@ -1179,7 +1198,9 @@ export default function App() {
                 <p className="linkout-msg">
                   {playErrorId === openEpisode.episodeId
                     ? <>⚠️ Afsnittet kunne ikke afspilles i appen (ligger måske kun hos <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>). Prøv at åbne det direkte:</>
-                    : <>🔒 Dette afsnit kan ikke afspilles inde i appen — det ligger bag <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>. Åbn det direkte hos udbyderen:</>}
+                    : isTvEpisode(openEpisode)
+                      ? <>📺 Dette er et <strong>TV-program</strong> og kan ikke afspilles i appen. Se det hos DR TV:</>
+                      : <>🔒 Dette afsnit kan ikke afspilles inde i appen — det ligger bag <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>. Åbn det direkte hos udbyderen:</>}
                 </p>
                 {openEpisode.linkUrl ? (
                   <a className="linkout-btn" href={openEpisode.linkUrl} target="_blank" rel="noopener noreferrer">
@@ -1302,6 +1323,11 @@ function PodcastCard({
           <strong>{podcast.title}</strong>
           <span>{podcast.author}</span>
           <span className="card-tags">
+            {podcast.kind === 'tv' && (
+              <em className="tv" title="TV-program fra DR — kan ikke afspilles i appen, men afsnittene kommer i køen med link til DR TV">
+                📺 TV
+              </em>
+            )}
             {chartRank && (
               <em className="rank" title={`Nr. ${chartRank} på Apples top-50 i Danmark`}>
                 #{chartRank} i DK
@@ -1351,6 +1377,9 @@ function EpisodeItem({
   const art = ep.image || ep.podcastImage
   const playable = !!ep.audioUrl
   const source = sourceOf(ep)
+  const tv = isTvEpisode(ep)
+  // "DR TV" -> src-dr-tv (mellemrum i en className ville blive til to klasser)
+  const srcClass = 'src-' + source.toLowerCase().replace(/\s+/g, '-')
   // fremdrift: brug live-tiden for det aktuelle afsnit, ellers den gemte position
   const pos = isCurrent && liveTime != null ? liveTime : ep.positionSec || 0
   const total = ep.durationSec || 0
@@ -1370,7 +1399,7 @@ function EpisodeItem({
       <button
         className={`ep-thumb ${playable ? '' : 'link'}`}
         onClick={activate}
-        title={playable ? 'Afspil' : 'Kan ikke afspilles i appen — tryk for at åbne hos udbyder'}
+        title={playable ? 'Afspil' : `Kan ikke afspilles i appen — tryk for at åbne hos ${source || 'udbyder'}`}
       >
         {art ? <img src={art} alt="" loading="lazy" /> : <span className="ep-noimg" />}
         <span className="ep-badge">{playable ? '▶' : '↗'}</span>
@@ -1385,11 +1414,11 @@ function EpisodeItem({
               🔥 #{chartRank} i DK
             </em>
           )}
-          {source && <em className={`src src-${source.toLowerCase()}`}>{source}</em>}
+          {source && <em className={`src ${srcClass}`}>{tv ? '📺 ' : ''}{source}</em>}
           {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
           {fmtDate(ep.publishedAt)}
           {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
-          {!playable && ' · kun hos udbyder'}
+          {!playable && (tv ? ' · ses hos DR TV' : ' · kun hos udbyder')}
         </span>
         {started && (
           <span className="ep-progress" title={`${fmtClock(pos)} af ${fmtClock(total)}`}>

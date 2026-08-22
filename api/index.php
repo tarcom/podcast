@@ -8,6 +8,7 @@ require __DIR__ . '/podcastindex.php';
 require __DIR__ . '/podcast_store.php';
 require __DIR__ . '/charts.php';
 require __DIR__ . '/rssfeed.php';
+require __DIR__ . '/drtv.php';
 
 $action = $_GET['action'] ?? 'health';
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
@@ -210,6 +211,16 @@ try {
             $response = podcastindex_request($config, '/search/byterm', [
                 'q' => $query, 'max' => $max, 'clean' => true, 'fulltext' => false,
             ]);
+            // DR TV med i søgningen (2026-08-22): TV-programmer kan ikke afspilles i appen, men
+            // skal kunne findes og følges som alt andet — de lægges ØVERST, fordi de er få og
+            // præcise (DR's katalog), hvor Podcast Index typisk svarer med snesevis af hits.
+            // Svarer DR ikke, mærker brugeren det ikke.
+            $tv = drtv_search($query, 6);
+            if ($tv) {
+                $feeds = is_array($response['feeds'] ?? null) ? $response['feeds'] : [];
+                $response['feeds'] = array_merge($tv, $feeds);
+                $response['count'] = count($response['feeds']);
+            }
             json_response($response, isset($response['status']) && !$response['status'] ? 502 : 200);
 
         case 'podcast':
@@ -225,6 +236,15 @@ try {
             $url = trim((string) ($_GET['url'] ?? ''));
             if ($url === '') {
                 json_response(['status' => false, 'error' => 'url is required'], 422);
+            }
+            // DR TV-serie indsat som URL → slå den op hos DR i stedet for hos Podcast Index,
+            // som ikke kender TV.
+            if (drtv_path_from_url($url) !== null) {
+                $feed = drtv_series_by_path((string) drtv_path_from_url($url));
+                json_response(
+                    $feed ? ['status' => true, 'feed' => $feed] : ['status' => false, 'error' => 'DR TV-serien blev ikke fundet'],
+                    $feed ? 200 : 404
+                );
             }
             $response = podcastindex_request($config, '/podcasts/byfeedurl', ['url' => $url]);
             json_response($response, isset($response['status']) && !$response['status'] ? 502 : 200);
@@ -245,7 +265,7 @@ try {
             $deviceId = required_string($body, 'deviceId');
             $feedId = required_int($body, 'feedId');
             $title = required_string($body, 'title');
-            $addedVia = (($body['addedVia'] ?? '') === 'url') ? 'url' : 'search';
+            $addedVia = in_array($body['addedVia'] ?? '', ['url', 'drtv'], true) ? (string) $body['addedVia'] : 'search';
             $pdo = db($config);
             $stmt = $pdo->prepare(
                 'INSERT INTO podcast_favorites (device_id, feed_id, title, image, author, language, feed_url, added_via)
@@ -279,7 +299,9 @@ try {
         case 'episodes.feed':
             $deviceId = $deviceFromGet();
             $feedId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
-            if ($feedId <= 0) {
+            // NB: negative id'er er gyldige — Podimo-shows og DR TV-serier har syntetiske,
+            // negative feed-id'er, og deres afsnit skal også kunne listes.
+            if ($feedId === 0) {
                 json_response(['status' => false, 'error' => 'id is required'], 422);
             }
             $pdo = db($config);
