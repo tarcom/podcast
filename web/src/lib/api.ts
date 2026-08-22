@@ -28,6 +28,9 @@ async function limited<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+// Fuld URL til ét endpoint — bruges af sendBeacon i offline.ts, som ikke kan gå gennem axios.
+export const apiUrl = (action: string) => `${API_BASE}?action=${encodeURIComponent(action)}`
+
 type Params = Record<string, unknown>
 const apiGet = (params: Params) => limited(() => client.get('', { params }))
 const apiPost = (body: unknown, params: Params) => limited(() => client.post('', body, { params }))

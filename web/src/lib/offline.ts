@@ -8,7 +8,7 @@
 //    serveren. Uden en udbakke ville to uger uden dækning betyde at alt dukker op som uhørt
 //    igen, og at man mister sin plads midt i et afsnit. Skrivningerne lægges derfor i kø og
 //    sendes når forbindelsen er tilbage.
-import { setState } from './api'
+import { apiUrl, setState } from './api'
 
 // ---------- øjebliksbillede ----------
 const SNAP_PREFIX = 'podcast_snap_'
@@ -79,6 +79,20 @@ export async function saveStateResilient(deviceId: string, w: StateWrite): Promi
   } catch {
     remember(w)
   }
+}
+
+// Sidste udkald: app'en er ved at blive lukket eller kasseret af Android. En almindelig POST
+// når ikke af sted der (axios' XHR aflyses med siden), men `sendBeacon` overlader afsendelsen
+// til browseren, som gør den færdig bagefter. Lykkes selv dét ikke, ryger skrivningen i
+// udbakken og sendes næste gang app'en åbnes.
+export function beaconState(deviceId: string, w: StateWrite): void {
+  try {
+    const blob = new Blob([JSON.stringify({ deviceId, ...w })], { type: 'application/json' })
+    if (navigator.sendBeacon(apiUrl('state.set'), blob)) return
+  } catch {
+    // sendBeacon findes ikke, eller kvoten er brugt
+  }
+  remember(w)
 }
 
 // Tøm udbakken. Returnerer hvor mange der kom af sted. Stopper ved første fejl, så vi ikke

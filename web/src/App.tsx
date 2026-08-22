@@ -16,6 +16,7 @@ import {
   setStateMany,
 } from './lib/api'
 import { getDeviceId } from './lib/device'
+import { startKeepAlive, stopKeepAlive } from './lib/keepalive'
 import {
   downloadEpisode,
   downloadsSupported,
@@ -29,6 +30,7 @@ import {
   type StorageInfo,
 } from './lib/downloads'
 import {
+  beaconState,
   flushOutbox,
   outboxSize,
   readSnapshot,
@@ -618,6 +620,56 @@ export default function App() {
     }
   }, [])
 
+  // Tidslinjen på låseskærmen og i bilen. Uden setPositionState viser Tesla-skærmen hverken
+  // forløbet tid eller varighed — kun titlen. Kaldes ved spring/start/pause, ikke ved hvert
+  // timeupdate (fire gange i sekundet er der ingen grund til at fodre systemet).
+  const syncPositionState = useCallback(() => {
+    const el = audioRef.current
+    if (!el || !('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return
+    const duration = el.duration
+    if (!duration || !isFinite(duration)) return
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: el.playbackRate || 1,
+        position: Math.max(0, Math.min(el.currentTime, duration)),
+      })
+    } catch {
+      // nogle browsere afviser værdier de ikke kan lide — det må ikke vælte afspilningen
+    }
+  }, [])
+
+  // Gem lytte-positionen NU i stedet for om op til 8 sekunder. Bruges når man pauser og når
+  // app'en ryger i baggrunden: Android kan kassere siden uden varsel, og så var de sidste
+  // sekunder tabt. `viaBeacon` bruges på pagehide, hvor en almindelig POST ikke når af sted.
+  const savePositionNow = useCallback(
+    (viaBeacon = false) => {
+      const el = audioRef.current
+      if (!el || !current) return
+      lastSaved.current = Date.now()
+      const w = {
+        episodeId: current.episodeId,
+        feedId: current.feedId,
+        positionSec: Math.floor(el.currentTime),
+        durationSec: Math.floor(el.duration || current.durationSec),
+      }
+      if (viaBeacon) beaconState(deviceId, w)
+      else persistState(w).catch(() => {})
+    },
+    [current, deviceId, persistState],
+  )
+
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') savePositionNow() }
+    const onUnload = () => savePositionNow(true)
+    document.addEventListener('visibilitychange', onHide)
+    window.addEventListener('pagehide', onUnload)
+    return () => {
+      document.removeEventListener('visibilitychange', onHide)
+      window.removeEventListener('pagehide', onUnload)
+    }
+  }, [savePositionNow])
+
   // spol: negativ = tilbage, positiv = frem (sekunder)
   const skip = useCallback((delta: number) => {
     const el = audioRef.current
@@ -625,7 +677,8 @@ export default function App() {
     const target = Math.min(el.duration || Infinity, Math.max(0, el.currentTime + delta))
     el.currentTime = target
     setCurTime(target)
-  }, [])
+    syncPositionState()
+  }, [syncPositionState])
 
   // slider: opdatér visning mens der trækkes, sæt lyden når man slipper
   const onSeekInput = useCallback((v: number) => {
@@ -637,9 +690,17 @@ export default function App() {
     if (el) el.currentTime = v
     setCurTime(v)
     setSeeking(false)
-  }, [])
+    syncPositionState()
+  }, [syncPositionState])
 
-  // Media Session: metadata + betjening på låseskærm/notifikation (baggrund)
+  // Media Session: metadata + betjening på låseskærm, i notifikationen og på bilens skærm.
+  //
+  // BILEN (2026-08-22): Tesla — og biler generelt — sender kun ét sæt kommandoer over Bluetooth
+  // (AVRCP). Ratets/skærmens frem/tilbage er "næste/forrige nummer" (`nexttrack`/`previoustrack`);
+  // der findes ikke en "spol 30 sek."-kommando at binde til. Derfor ER de to knapper spol her:
+  // **næste = +30 sek., forrige = −10 sek.**, præcis som ↻30/↺10 i appen. Prisen er at man ikke
+  // kan springe til næste afsnit fra bilen — men auto-videre kører stadig af sig selv når et
+  // afsnit er slut, så det er kun det manuelle spring der forsvinder.
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const ms = navigator.mediaSession
@@ -654,16 +715,25 @@ export default function App() {
     }
     ms.setActionHandler('play', () => audioRef.current?.play().then(() => setPlaying(true)).catch(() => {}))
     ms.setActionHandler('pause', () => { audioRef.current?.pause(); setPlaying(false) })
-    ms.setActionHandler('seekbackward', () => { if (audioRef.current) { const t = Math.max(0, audioRef.current.currentTime - 10); audioRef.current.currentTime = t; setCurTime(t) } })
-    ms.setActionHandler('seekforward', () => { if (audioRef.current) { const t = audioRef.current.currentTime + 30; audioRef.current.currentTime = t; setCurTime(t) } })
-    try { ms.setActionHandler('seekto', (d) => { const el = audioRef.current; if (el && d.seekTime != null) { el.currentTime = d.seekTime; setCurTime(d.seekTime) } }) } catch { /* ikke understøttet */ }
-    ms.setActionHandler('nexttrack', () => onEnded())
+    // hold-nede-knapper i nogle biler/headsets
+    ms.setActionHandler('seekbackward', () => skip(-10))
+    ms.setActionHandler('seekforward', () => skip(30))
+    // enkelt-tryk på frem/tilbage (Tesla-skærmen, rattet, headset)
+    ms.setActionHandler('previoustrack', () => skip(-10))
+    ms.setActionHandler('nexttrack', () => skip(30))
+    try { ms.setActionHandler('seekto', (d) => { const el = audioRef.current; if (el && d.seekTime != null) { el.currentTime = d.seekTime; setCurTime(d.seekTime); syncPositionState() } }) } catch { /* ikke understøttet */ }
     return () => {
-      for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'nexttrack'] as const) {
+      for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'nexttrack', 'previoustrack'] as const) {
         try { ms.setActionHandler(a, null) } catch { /* ignore */ }
       }
     }
-  }, [current, onEnded])
+  }, [current, skip, syncPositionState])
+
+  // Systemet skal vide om vi spiller eller er pauset — ellers viser bilen/låseskærmen det
+  // forkerte symbol, og under keep-alive (lydløs lyd) ville den tro der stadig afspilles.
+  useEffect(() => {
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+  }, [playing])
 
   // Hitliste-opslag: normaliseret titel -> placering. Apple giver ingen fælles id'er
   // på afsnits-listen (kun navn + vært), så titel er det eneste vi kan matche på.
@@ -1139,8 +1209,21 @@ export default function App() {
           ref={audioRef}
           onEnded={onEnded}
           onTimeUpdate={onTimeUpdate}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
+          onPlay={() => {
+            setPlaying(true)
+            stopKeepAlive() // der spiller rigtig lyd nu — stilheden har gjort sit
+            syncPositionState()
+          }}
+          onPause={() => {
+            setPlaying(false)
+            const el = audioRef.current
+            // Slutningen af et afsnit er også en "pause" — der er intet at holde i live der.
+            if (el && current && !el.ended) {
+              savePositionNow() // siden kan blive kasseret; gem positionen med det samme
+              startKeepAlive() // hold afspilleren i notifikationsskuffen i 10 min.
+            }
+            syncPositionState()
+          }}
           onError={() => {
             // lyd kunne ikke afspilles (fx DR app-only/geo) → vis link-out-pop-up
             if (current && current.audioUrl) {
@@ -1153,6 +1236,7 @@ export default function App() {
             const el = audioRef.current
             if (el && current && current.positionSec && el.currentTime < 1) el.currentTime = current.positionSec
             if (el && el.duration && isFinite(el.duration)) setDur(el.duration)
+            syncPositionState()
           }}
         />
         {current ? (

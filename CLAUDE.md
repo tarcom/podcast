@@ -454,6 +454,42 @@ på en telefon — man kunne ikke se hvad man havde fundet. Nu styrer **`searche
 - Tomt resultat siger det nu ("Ingen podcasts matchede …") og foreslår "Alle sprog" hvis
   sprogfiltret står på **Kun dansk** — ellers ligner et bortfiltreret resultat en fejl.
 
+## Bil og baggrund: Media Session udvidet (2026-08-22)
+To klager: (1) afspilleren forsvinder fra notifikationsskuffen få minutter efter man pauser,
+mens Castbox bliver stående i timevis; (2) i Teslaen kan man kun pause/afspille, ikke spole.
+
+- **Bilens frem/tilbage er nu spol: `nexttrack` = +30 sek., `previoustrack` = −10 sek.**
+  Biler sender kun AVRCP-kommandoer over Bluetooth, og **der findes ingen "spol 30 sek."-kommando**
+  — rattet/skærmen sender "næste/forrige nummer". Derfor er de to knapper bundet til `skip()`
+  ligesom ↻30/↺10 i appen. **Konsekvens:** man kan ikke længere springe til næste afsnit fra
+  bilen (auto-videre ved afsnittets slutning kører stadig). Vil man have springet tilbage, er det
+  `nexttrack` → `onEnded()` igen. `seekforward`/`seekbackward` (hold nede) peger på de samme ±30/−10.
+- **`setPositionState()`** kaldes ved start/pause/spol/metadata (`syncPositionState()`), så bilens
+  og låseskærmens tidslinje viser forløbet tid og varighed. `playbackState` sættes nu eksplicit —
+  ellers ville keep-alive nedenfor få systemet til at tro der stadig afspilles.
+- **Keep-alive: `web/src/lib/keepalive.ts`.** En PWA har ingen foreground service, så en pauset
+  app er bare en baggrundsfane: Chrome fryser den, og Android kasserer den ved hukommelsespres.
+  Modtrækket er at afspille **lydløs lyd** mens der er pauset — så regner Android app'en for
+  "afspiller lyd" og lader den være. To ting må ikke ændres:
+  - Lyden må **ikke** være `muted` eller have `volume = 0` — en dæmpet strøm tæller ikke som
+    afspilning, og så holder trickget ingenting i live. WAV'en er tavs i stedet (8-bit PCM,
+    værdien 128 = nul-udsving), bygget i kode så der ikke skal caches en ekstra fil.
+  - Den **stopper af sig selv efter 10 minutter** (`LIMIT_MS`). Keep-alive holder lydfokus og
+    holder Bluetooth-lydkanalen åben i bilen, så den må ikke køre i det uendelige.
+  Starter i `<audio onPause>` (kun når et afsnit er i gang og ikke er slut — afsnittets slutning
+  er også en "pause"), stopper i `onPlay`. Verificeret i Chrome: den genererede WAV afspilles og
+  looper, og `playbackState` skifter korrekt playing/paused.
+- **Positionen gemmes nu med det samme** ved pause og når app'en ryger i baggrunden
+  (`savePositionNow()` på `visibilitychange`/`pagehide`), ikke kun hvert 8. sekund. På `pagehide`
+  bruges **`navigator.sendBeacon`** (`beaconState()` i offline.ts) — en axios-POST aflyses sammen
+  med siden når Android dræber den. Fejler beacon'en, ryger skrivningen i udbakken.
+- **Kan ikke testes herfra:** selve bilens knapper kræver en Bluetooth-enhed. Headless Chrome kan
+  hverken sende AVRCP-kommandoer eller vise notifikationsskuffen — det skal afprøves på telefonen.
+- **Telefonside (ikke kode):** Chrome skal stå til **Ubegrænset** batteriforbrug
+  (Indstillinger → Apps → Chrome → Batteri), ellers dræber Android baggrundsprocessen uanset hvad
+  app'en gør. Androids "medie-genoptagelse" (den chip der bliver liggende efter en app er lukket)
+  kræver en `MediaBrowserService` og kan **ikke** lade sig gøre fra web.
+
 ## Recommendations (ønsket, ikke bygget)
 Bruger vil have forslag baseret på favoritter. Kan gøres via Podcast Index-kategorier på favoritter
 → top-podcasts i samme kategori minus ejede. Afventer at kende brugerens faktiske favoritter (kan
