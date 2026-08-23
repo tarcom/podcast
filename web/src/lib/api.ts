@@ -118,6 +118,7 @@ export async function listFavorites(deviceId: string): Promise<Favorite[]> {
     language: s(it.language),
     feedUrl: https(s(it.feed_url)),
     addedVia: s(it.added_via),
+    priority: n(it.priority),
   }))
 }
 
@@ -138,6 +139,12 @@ export async function addFavorite(deviceId: string, p: Podcast, addedVia = 'sear
 
 export async function removeFavorite(deviceId: string, feedId: number): Promise<void> {
   await apiDelete({ action: 'favorites.remove' }, { deviceId, feedId })
+}
+
+// Superfavorit til/fra (stjernens 3. trin). Egen action frem for et felt på favorites.add, så
+// markeringen ikke kan nulstilles af en almindelig gen-tilføjelse af podcasten.
+export async function setFavoritePriority(deviceId: string, feedId: number, priority: number): Promise<void> {
+  await apiPost({ deviceId, feedId, priority }, { action: 'favorites.setPriority' })
 }
 
 // --- Episodes ---
@@ -176,7 +183,8 @@ export async function setState(
   await apiPost({ deviceId, ...payload }, { action: 'state.set' })
 }
 
-// Bulk: markér mange afsnit hørt/uhørt på én gang (til "ryd alt herunder").
+// Bulk: markér mange afsnit hørt/uhørt på én gang. Frontenden bruger den ikke lige nu —
+// "✓ ryd herunder" er fjernet 2026-08-23 — men endpointet står ved lige på serveren.
 export async function setStateMany(
   deviceId: string,
   episodes: { episodeId: number; feedId: number }[],

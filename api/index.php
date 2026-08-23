@@ -36,7 +36,8 @@ try {
                     device_id VARCHAR(80) NOT NULL, feed_id BIGINT NOT NULL,
                     title VARCHAR(255) NOT NULL, image TEXT NULL, author VARCHAR(255) NULL,
                     language VARCHAR(80) NULL, feed_url TEXT NULL,
-                    added_via VARCHAR(16) NOT NULL DEFAULT "search", last_fetched DATETIME NULL,
+                    added_via VARCHAR(16) NOT NULL DEFAULT "search", priority TINYINT NOT NULL DEFAULT 0,
+                    last_fetched DATETIME NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE KEY uniq_fav_device_feed (device_id, feed_id),
                     KEY idx_fav_device_created (device_id, created_at)
@@ -69,6 +70,8 @@ try {
                 'updated_at' => 'ALTER TABLE podcast_episode_state
                     ADD COLUMN updated_at TIMESTAMP NOT NULL
                     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+                'priority' => 'ALTER TABLE podcast_favorites
+                    ADD COLUMN priority TINYINT NOT NULL DEFAULT 0',
             ];
             foreach ($alters as $col => $sql) {
                 try {
@@ -253,7 +256,7 @@ try {
         case 'favorites.list':
             $deviceId = $deviceFromGet();
             $pdo = db($config);
-            $stmt = $pdo->prepare('SELECT feed_id, title, image, author, language, feed_url, added_via, created_at
+            $stmt = $pdo->prepare('SELECT feed_id, title, image, author, language, feed_url, added_via, priority, created_at
                                    FROM podcast_favorites WHERE device_id = :dev ORDER BY title ASC');
             $stmt->execute(['dev' => $deviceId]);
             json_response(['status' => true, 'items' => $stmt->fetchAll()]);
@@ -283,6 +286,22 @@ try {
             ]);
             podcast_refresh_feed($config, $pdo, $deviceId, $feedId);
             json_response(['status' => true]);
+
+        // Superfavorit til/fra (stjernens 3. trin). priority 1 = nye afsnit markeres ekstra
+        // i koen; kolonnen rores IKKE af favorites.add, sa en genindlaesning af feedet eller et
+        // gensyn med podcasten i Udforsk ikke nulstiller markeringen.
+        case 'favorites.setPriority':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            $deviceId = required_string($body, 'deviceId');
+            $feedId = required_int($body, 'feedId');
+            $priority = ((int) ($body['priority'] ?? 0)) > 0 ? 1 : 0;
+            $pdo = db($config);
+            $stmt = $pdo->prepare('UPDATE podcast_favorites SET priority = :prio
+                                   WHERE device_id = :dev AND feed_id = :feed');
+            $stmt->execute(['prio' => $priority, 'dev' => $deviceId, 'feed' => $feedId]);
+            json_response(['status' => true, 'priority' => $priority, 'updated' => $stmt->rowCount()]);
 
         case 'favorites.remove':
             if ($method !== 'DELETE') {

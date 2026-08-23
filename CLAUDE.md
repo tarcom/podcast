@@ -26,7 +26,7 @@ er lette at snuble over.
   henter cachen først og kalder `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor).
   Bevidst uden cron — one.com/simply-cron er ikke en forudsætning.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
-  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v8`**).
+  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v12`**).
   Lyd-cachen **`nordpod-audio-v1`** er en anden cache og skal blive stående — se afsnittet om
   offline-download.
 - **Installerbarhed (fixet 2026-07-27):** `web/index.html` manglede `<link rel="manifest">` (Vite
@@ -44,9 +44,8 @@ er lette at snuble over.
 ## Nyere tilføjelser (2026-07-26)
 - **Kø grupperet pr. dag** (`groupByDay`/`dayLabel` i App.tsx): "I dag"/"I går"/ugedag (<7 dage)/
   fuld dato. Køen viser **kun uhørte**. Cover-**billede** som thumbnail (klik = afspil) i stedet for
-  play-symbol (`.ep-thumb`). **"✓ ryd herunder"** pr. dag = markér den dag + alt ældre som hørt via
-  nyt backend-endpoint **`state.setMany`** (bulk). Hørt-toggle beholdt (fjerner fra kø da køen kun er
-  uhørte).
+  play-symbol (`.ep-thumb`). (Køen viser i dag også hørte afsnit, og knappen "✓ ryd herunder" er
+  fjernet igen — se afsnittene nedenfor. Backendens `state.setMany` står stadig, ubrugt.)
 - **"Læs mere"-modaler:** afsnit-modal (fuld `description`/show notes + billede + dato/tid/varighed +
   Afspil/Markér) og podcast-modal udvidet med cover/forfatter/kategorier/beskrivelse. Beskrivelser
   renderes med `dangerouslySetInnerHTML` (RSS-HTML; personlig app, lav risiko). Podcast-info hentes
@@ -418,15 +417,12 @@ dag-gruppe (det er kronologien der er pointen), og markeres i stedet på **selve
 `.episode.continuing` = samme lysegrønne flade som den gamle boks + en terracotta-kant, plus en
 "▶ Fortsætter"-chip i meta-linjen. Fremdriftsbjælken og "X min tilbage" var der allerede og styres
 af samme `isInProgress()`. Dag-grupperne filtrerer ikke længere in-progress-afsnit fra.
-NB: "✓ ryd herunder" tog allerede in-progress-afsnit med (den filtrerer på `playedAt`, ikke på
-visningen), så adfærden er uændret der.
 
 ## Køen viser nu også HØRTE afsnit (2026-08-21)
 Hørte afsnit forsvandt før ud af køen. Nu bliver de liggende på deres **kronologiske plads** og
 markeres i stedet: `.episode.heard` (tonet ned, gråtonet cover, dæmpet titel) + et grønt
 **"✓ Hørt"**-mærkat i meta-linjen. Dag-overskriften viser "**X af Y uhørte**" på dage hvor noget er
-hørt, og "✓ ryd herunder" skjules på dage hvor der ikke er noget uhørt tilbage (hverken den dag
-eller ældre). `groupByDay(queue)` får hele køen — ikke `queue.filter(!playedAt)` som før.
+hørt. `groupByDay()` får hele køen — ikke `queue.filter(!playedAt)` som før.
 - **`$unheardOnly` er væk fra `podcast_newest_episodes()`**; vinduet er igen "de 200 nyeste afsnit".
 - **Men payload-lærdommen holder:** `description` sendes **kun for uhørte** rækker
   (`CASE WHEN st.played_at IS NULL THEN e.description ELSE NULL END`). Målt live efter deploy:
@@ -436,8 +432,7 @@ eller ældre). `groupByDay(queue)` får hele køen — ikke `queue.filter(!playe
   `showEpisode()` i App.tsx. Svaret patches ind i `queue`/`detailEpisodes`, så det kun hentes én
   gang pr. afsnit; imens står der "Henter beskrivelse…". Offline fejler kaldet stille, og pop-up'en
   viser "Ingen beskrivelse."
-- Alt andet regner stadig på `!playedAt`: uhørt-tælleren, fane-badget, bulk-hentning og
-  "ryd herunder" — adfærden der er uændret.
+- Alt andet regner stadig på `!playedAt`: uhørt-tælleren, fane-badget og bulk-hentning.
 - Verificeret i rigtig Chrome mod den live side: 200 rækker, 82 hørte spredt **mellem** de uhørte,
   82 "Hørt"-mærkater, og beskrivelsen hentet efter klik på et hørt afsnit.
 
@@ -527,6 +522,40 @@ eksisterende link-out-visning (↗ + pop-up) bruges uændret. `api/drtv.php` er 
 - **Bemærk sæson-hullet:** Debattens sæson sluttede 11. juni, så serien har ingen afsnit inden for
   køens vindue (de 200 nyeste) før den nye sæson går i gang. Afsnittene ligger der — de ses ved at
   åbne serien under Favoritter. Deadline sender dagligt og fylder derfor i køen med det samme.
+
+## Superfavoritter ★★ + "ryd herunder" fjernet (2026-08-23)
+Nogle podcasts må ikke drukne når et nyt afsnit lander (i dag **Store Penge** og TV-programmet
+**Debatten**). De markeres nu som **superfavoritter**.
+
+- **Stjernen er en rundtur i tre trin på samme knap:** ☆ (ikke fulgt) → ★ (favorit) → **★★**
+  (superfavorit) → ☆ (fjernet). `toggleFavorite` i App.tsx; `title`/`aria-label` fortæller hvad
+  næste tryk gør. ★→★★ kalder kun `favorites.setPriority` og genindlæser favoritterne — ingen
+  grund til at hente kø eller feeds igen.
+- **Kronologien røres ikke.** Det var et udtrykkeligt krav: superafsnit **flytter sig ikke** i
+  listen og får ingen egen boks øverst (samme lære som "Fortsætter", der blev rullet tilbage
+  2026-08-10). Markeringen sidder på **rækken**: `.episode.super` = gylden flade + gylden
+  venstrekant, plus et **★★**-mærkat i meta-linjen. Bevidst et **symbol, ikke en tekst**.
+- **Kun uhørte afsnit markeres** (`superNew = sup && !heard`) — pointen er "her er noget nyt du
+  ikke vil misse"; et hørt afsnit er allerede fanget. CSS'en står **efter** `.episode.continuing`,
+  så den gyldne flade vinder når begge gælder.
+- **Filter i Kø-fanen:** ★★-knappen ved siden af "Opdatér" viser kun afsnit fra superfavoritter
+  (`onlySuper`/`shownQueue`). Knappen vises kun hvis der findes mindst én superfavorit, og
+  tilstanden gemmes **ikke** mellem besøg — en kø der åbner halvtom uden synlig grund ligner en
+  fejl. Tælleren i toppen og badget på fanen gælder fortsat **hele** køen.
+- **Data:** ny kolonne **`priority TINYINT NOT NULL DEFAULT 0`** på `podcast_favorites` (1 =
+  superfavorit), tilføjet via `?action=migrate`'s `$alters` (kørt live: `columnsAdded:["priority"]`).
+  Nyt endpoint **`favorites.setPriority`** (POST: deviceId/feedId/priority). Kolonnen røres
+  **ikke** af `favorites.add`'s `ON DUPLICATE KEY UPDATE`, så en gen-tilføjelse eller et gensyn i
+  Udforsk ikke nulstiller markeringen. Frontenden læser `priority` fra `favorites.list` og laver
+  selv `superIds` — **afsnits-forespørgslerne er uændrede**, så køens payload vokser ikke.
+- **"✓ ryd herunder" er FJERNET** (knap + `clearBelow`). Køen er bevidst en lang liste man plukker
+  fra — ikke en indbakke der skal tømmes — så bulk-markeringen løste et problem der ikke fandtes.
+  Genindfør den ikke uden at spørge. Backendens `state.setMany` er beholdt, men ubrugt.
+- **Verificeret i rigtig Chrome mod den live side** (device `allan-main`, ingen klik på stjerner
+  eller hørt-knapper): 200 rækker i køen, ét uhørt Store Penge-afsnit med `.episode.super` + ★★,
+  filteret skar ned til 14 afsnit og tilbage til 200 igen, 0 `.clear-below`, og begge
+  superfavoritter viser ★★ i Favoritter. Debatten har p.t. ingen afsnit i køens 200-vindue
+  (sæsonpause — se DR TV-afsnittet).
 
 ## Recommendations (ønsket, ikke bygget)
 Bruger vil have forslag baseret på favoritter. Kan gøres via Podcast Index-kategorier på favoritter
