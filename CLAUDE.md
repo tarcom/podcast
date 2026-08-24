@@ -468,8 +468,15 @@ mens Castbox bliver stående i timevis; (2) i Teslaen kan man kun pause/afspille
   - Lyden må **ikke** være `muted` eller have `volume = 0` — en dæmpet strøm tæller ikke som
     afspilning, og så holder trickget ingenting i live. WAV'en er tavs i stedet (8-bit PCM,
     værdien 128 = nul-udsving), bygget i kode så der ikke skal caches en ekstra fil.
-  - Den **stopper af sig selv efter 10 minutter** (`LIMIT_MS`). Keep-alive holder lydfokus og
-    holder Bluetooth-lydkanalen åben i bilen, så den må ikke køre i det uendelige.
+  - Den **stopper af sig selv efter `LIMIT_MS`, og grænsen er ikke den samme to steder**:
+    **2 timer i Teslas browser, 10 minutter alle andre steder.** Keep-alive holder lydfokus og
+    en åben Bluetooth-kanal, så den må ikke køre i det uendelige — men prisen er vidt forskellig.
+    På telefonen koster den batteri. I bilen er bilen selv lydkilden, og til gengæld er det dér,
+    den betyder mest: Tesla lukker browseren når man forlader den, og er langsom til at hente
+    siden frem igen. Kører der lyd, bliver browseren liggende i baggrunden — også med et andet
+    vindue åbent ved siden af. Genkendes på `Tesla/<version>` sidst i user agent
+    (`… Safari/537.36 Tesla/2021.36.5.5-…`); holder Tesla op med det, falder vi tilbage til de
+    ti minutter, hvilket er den ufarlige vej at fejle på.
   Starter i `<audio onPause>` (kun når et afsnit er i gang og ikke er slut — afsnittets slutning
   er også en "pause"), stopper i `onPlay`. Verificeret i Chrome: den genererede WAV afspilles og
   looper, og `playbackState` skifter korrekt playing/paused.

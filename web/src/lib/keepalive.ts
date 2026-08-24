@@ -12,7 +12,23 @@
 // PRISEN, og derfor grænsen: keep-alive holder lydfokus (starter man Spotify, tager den fokus
 // og vores stilhed stopper) og koster en smule batteri — og i en bil holder den
 // Bluetooth-lydkanalen åben. Den slukker derfor af sig selv efter LIMIT_MS.
-const LIMIT_MS = 10 * 60 * 1000
+//
+// TO GRÆNSER, fordi prisen er vidt forskellig de to steder:
+//
+// I Teslas browser er det hverken et batteri- eller et Bluetooth-spørgsmål — bilen ER lydkilden.
+// Til gengæld er det dér, keep-alive betyder mest: Tesla lukker browseren når man forlader den,
+// og den er langsom at hente siden frem igen. Holder app'en lyd i gang, bliver browseren liggende
+// i baggrunden, og både denne fane og et evt. andet vindue overlever. Derfor to timer der — nok
+// til en hel etape mellem to stop.
+//
+// På telefonen står de ti minutter. Der ER prisen reel: lydfokus og en åben Bluetooth-kanal
+// koster batteri, og man pauser typisk fordi man er færdig for nu.
+//
+// Teslas browser identificerer sig med «Tesla/<version>» sidst i sin user agent, fx
+// «… Safari/537.36 Tesla/2021.36.5.5-c6d521764ab9». Holder Tesla en dag op med det, falder vi
+// tilbage til de ti minutter — det er den ufarlige vej at fejle på.
+const I_TESLA = typeof navigator !== 'undefined' && /\bTesla\//.test(navigator.userAgent)
+const LIMIT_MS = I_TESLA ? 2 * 60 * 60 * 1000 : 10 * 60 * 1000
 
 // VIGTIGT: lyden må hverken være `muted` eller have `volume = 0`. En dæmpet lydstrøm tæller
 // ikke som "afspiller lyd", og så holder trickget ingenting i live. Filen er tavs i stedet.
@@ -59,7 +75,7 @@ export function startKeepAlive(): void {
   timer = window.setTimeout(stopKeepAlive, LIMIT_MS)
 }
 
-/** Stop keep-alive — når der afspilles rigtig lyd igen, eller når de 10 minutter er gået. */
+/** Stop keep-alive — når der afspilles rigtig lyd igen, eller når tiden er gået. */
 export function stopKeepAlive(): void {
   window.clearTimeout(timer)
   timer = 0
