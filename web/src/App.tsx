@@ -112,13 +112,18 @@ const SOURCE_NAMES: [string, string][] = [
   ['acast', 'Acast'], ['megaphone', 'Megaphone'], ['spreaker', 'Spreaker'],
   ['libsyn', 'Libsyn'], ['buzzsprout', 'Buzzsprout'], ['simplecast', 'Simplecast'],
   ['podbean', 'Podbean'], ['spotify', 'Spotify'], ['anchor', 'Spotify'], ['omny', 'Omny'],
+  ['viaplay', 'Viaplay'],
 ]
-// TV-afsnit kendes på link-URL'en (dr.dk/drtv/...) — de har aldrig lyd i appen.
+// TV-afsnit kendes på link-URL'en — de har aldrig lyd i appen. DR TV siden 2026-08-22,
+// Viaplay/TV3 siden 2026-09-14 (Robinson Ekspeditionen sendes der, ikke på DR).
+const VIAPLAY_URL = /(?:^|\/\/|\.)viaplay\.(?:dk|com)\//
 function isTvEpisode(ep: EpisodeRow): boolean {
-  return (ep.linkUrl || '').includes('/drtv/')
+  const u = ep.linkUrl || ''
+  return u.includes('/drtv/') || VIAPLAY_URL.test(u)
 }
 function sourceOf(ep: EpisodeRow): string {
-  if (isTvEpisode(ep)) return 'DR TV'
+  // Kun DR's egen: Viaplay falder igennem til SOURCE_NAMES nedenfor og bliver til "Viaplay".
+  if ((ep.linkUrl || '').includes('/drtv/')) return 'DR TV'
   const u = ep.linkUrl || ep.audioUrl || ''
   try {
     const h = new URL(u).hostname.replace(/^www\./, '')
@@ -131,7 +136,8 @@ function sourceOf(ep: EpisodeRow): string {
 }
 
 // En favorit tegnes med samme kort som et søgeresultat. `addedVia` bærer TV-mærkatet videre,
-// så en fulgt DR TV-serie også er mærket i Favoritter.
+// så en fulgt TV-serie også er mærket i Favoritter. Feed-URL'en er fallback, fordi serier
+// tilføjet før 2026-09-14 blev gemt med added_via = 'drtv' uanset udbyder.
 function favoriteAsPodcast(f: Favorite): Podcast {
   return {
     id: f.feedId,
@@ -140,8 +146,20 @@ function favoriteAsPodcast(f: Favorite): Podcast {
     author: f.author,
     language: f.language,
     feedUrl: f.feedUrl,
-    kind: f.addedVia === 'drtv' || (f.feedUrl || '').includes('/drtv/') ? 'tv' : undefined,
+    kind:
+      f.addedVia === 'drtv' ||
+      f.addedVia === 'viaplay' ||
+      (f.feedUrl || '').includes('/drtv/') ||
+      VIAPLAY_URL.test((f.feedUrl || '') + '/')
+        ? 'tv'
+        : undefined,
   }
+}
+
+// Hvilken udbyder en TV-serie skal gemmes som. Selve opdateringen af afsnit hænger på
+// feed-URL'en i backenden, ikke på dette felt — det er kun til mærkatet i Favoritter.
+function tvVia(p: Podcast): 'drtv' | 'viaplay' {
+  return VIAPLAY_URL.test((p.feedUrl || '') + '/') ? 'viaplay' : 'drtv'
 }
 
 type DayGroup = { key: number; label: string; episodes: EpisodeRow[] }
@@ -384,7 +402,7 @@ export default function App() {
         setExploreErr('Ingen podcast fundet på den URL (Podcast Index kender den ikke).')
         return
       }
-      await addFavorite(deviceId, p, p.kind === 'tv' ? 'drtv' : 'url')
+      await addFavorite(deviceId, p, p.kind === 'tv' ? tvVia(p) : 'url')
       setUrlInput('')
       await loadFavorites()
       // Et nyt feed har ingen cache endnu, så køen skal have fat i RSS'et for at vise noget.
@@ -413,9 +431,9 @@ export default function App() {
   const toggleFavorite = useCallback(
     async (p: Podcast) => {
       if (!favIds.has(p.id)) {
-        // 'drtv' gør at favoritten kan mærkes som TV bagefter; selve opdateringen af afsnit
-        // hænger på feed-URL'en, ikke på dette felt.
-        await addFavorite(deviceId, p, p.kind === 'tv' ? 'drtv' : 'search')
+        // 'drtv'/'viaplay' gør at favoritten kan mærkes som TV bagefter; selve opdateringen
+        // af afsnit hænger på feed-URL'en, ikke på dette felt.
+        await addFavorite(deviceId, p, p.kind === 'tv' ? tvVia(p) : 'search')
       } else if (!superIds.has(p.id)) {
         // ★ → ★★: kun markeringen ændrer sig. Ingen grund til at hente kø eller feeds igen.
         await setFavoritePriority(deviceId, p.id, 1)
@@ -940,7 +958,7 @@ export default function App() {
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addByUrl()}
-              placeholder="…eller indsæt RSS-, Podimo- eller DR TV-URL"
+              placeholder="…eller indsæt RSS-, Podimo-, DR TV- eller Viaplay-URL"
             />
             <button onClick={addByUrl} disabled={exploreBusy}>
               Tilføj
@@ -1221,7 +1239,7 @@ export default function App() {
                   {playErrorId === openEpisode.episodeId
                     ? <>⚠️ Afsnittet kunne ikke afspilles i appen (ligger måske kun hos <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>). Prøv at åbne det direkte:</>
                     : isTvEpisode(openEpisode)
-                      ? <>📺 Dette er et <strong>TV-program</strong> og kan ikke afspilles i appen. Se det hos DR TV:</>
+                      ? <>📺 Dette er et <strong>TV-program</strong> og kan ikke afspilles i appen. Se det hos {sourceOf(openEpisode) || 'udbyderen'}:</>
                       : <>🔒 Dette afsnit kan ikke afspilles inde i appen — det ligger bag <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>. Åbn det direkte hos udbyderen:</>}
                 </p>
                 {openEpisode.linkUrl ? (
@@ -1346,7 +1364,7 @@ function PodcastCard({
           <span>{podcast.author}</span>
           <span className="card-tags">
             {podcast.kind === 'tv' && (
-              <em className="tv" title="TV-program fra DR — kan ikke afspilles i appen, men afsnittene kommer i køen med link til DR TV">
+              <em className="tv" title="TV-program — kan ikke afspilles i appen, men afsnittene kommer i køen med link til udbyderen">
                 📺 TV
               </em>
             )}
@@ -1457,7 +1475,7 @@ function EpisodeItem({
           {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
           {fmtDate(ep.publishedAt)}
           {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
-          {!playable && (tv ? ' · ses hos DR TV' : ' · kun hos udbyder')}
+          {!playable && (tv ? ' · ses hos ' + source : ' · kun hos udbyder')}
         </span>
         {started && (
           <span className="ep-progress" title={`${fmtClock(pos)} af ${fmtClock(total)}`}>

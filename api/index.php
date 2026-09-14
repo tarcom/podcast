@@ -9,6 +9,7 @@ require __DIR__ . '/podcast_store.php';
 require __DIR__ . '/charts.php';
 require __DIR__ . '/rssfeed.php';
 require __DIR__ . '/drtv.php';
+require __DIR__ . '/viaplay.php';
 require __DIR__ . '/drpodcast.php';
 
 $action = $_GET['action'] ?? 'health';
@@ -236,7 +237,10 @@ try {
             // skal kunne findes og følges som alt andet — de lægges ØVERST, fordi de er få og
             // præcise (DR's katalog), hvor Podcast Index typisk svarer med snesevis af hits.
             // Svarer DR ikke, mærker brugeren det ikke.
-            $tv = drtv_search($query, 6);
+            // Viaplay er med siden 2026-09-14, fordi Robinson Ekspeditionen kører på TV3 og
+            // derfor aldrig kunne findes gennem DR. Viaplays søgning er løs i koblingen, så
+            // viaplay_search() kræver at søgeordene faktisk står i seriens titel.
+            $tv = array_merge(drtv_search($query, 6), viaplay_search($query, 4));
             if ($tv) {
                 $feeds = is_array($response['feeds'] ?? null) ? $response['feeds'] : [];
                 $response['feeds'] = array_merge($tv, $feeds);
@@ -267,6 +271,15 @@ try {
                     $feed ? 200 : 404
                 );
             }
+            // Samme for en Viaplay-serie. Stien normaliseres til selve serien, så et link til et
+            // enkelt afsnit eller en sæson giver samme feed som et link til serien.
+            if (viaplay_path_from_url($url) !== null) {
+                $feed = viaplay_series_by_path((string) viaplay_path_from_url($url));
+                json_response(
+                    $feed ? ['status' => true, 'feed' => $feed] : ['status' => false, 'error' => 'Viaplay-serien blev ikke fundet'],
+                    $feed ? 200 : 404
+                );
+            }
             $response = podcastindex_request($config, '/podcasts/byfeedurl', ['url' => $url]);
             json_response($response, isset($response['status']) && !$response['status'] ? 502 : 200);
 
@@ -286,7 +299,7 @@ try {
             $deviceId = required_string($body, 'deviceId');
             $feedId = required_int($body, 'feedId');
             $title = required_string($body, 'title');
-            $addedVia = in_array($body['addedVia'] ?? '', ['url', 'drtv'], true) ? (string) $body['addedVia'] : 'search';
+            $addedVia = in_array($body['addedVia'] ?? '', ['url', 'drtv', 'viaplay'], true) ? (string) $body['addedVia'] : 'search';
             $pdo = db($config);
             $stmt = $pdo->prepare(
                 'INSERT INTO podcast_favorites (device_id, feed_id, title, image, author, language, feed_url, added_via)

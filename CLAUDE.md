@@ -597,6 +597,49 @@ eksisterende link-out-visning (↗ + pop-up) bruges uændret. `api/drtv.php` er 
   køens vindue (de 200 nyeste) før den nye sæson går i gang. Afsnittene ligger der — de ses ved at
   åbne serien under Favoritter. Deadline sender dagligt og fylder derfor i køen med det samme.
 
+## Viaplay/TV3 som link-out (2026-09-14)
+**Robinson Ekspeditionen kører på TV3/Viaplay, ikke på DR** — derfor kunne DR TV-søgningen aldrig
+finde den. `api/viaplay.php` er den fulde pendant til `drtv.php`, og serien ligger nu i køen som
+link-out ved siden af Debatten og Deadline.
+
+- **API'et kræver intet login:** `https://content.viaplay.dk/pc-dk/search?query=…` og
+  `…/pc-dk/serier/<slug>`. Begge svarer 200 anonymt. Produkterne bærer et `notice` med
+  "User must login to view content" — **det gælder afspilning**. Titler, datoer, resuméer,
+  varigheder og billeder er offentlige, og det er alt en link-out skal bruge.
+- **Kun den aktuelle sæson er fyldt ud.** Serie-siden har en `season-list`-blok pr. sæson, men
+  kun den nyeste har `_embedded.viaplay:products`; de øvrige kræver
+  `?seasonNumber=N&partial=1&blockId=…`. Samme "hvad er nyt"-model som DR TV.
+- **Kommende afsnit ligger i `viaplay:upcomingProducts`**, ikke i `viaplay:products`, og har
+  `content.duration` = null. De springes over på datoen, men bemærk at de ligger i et andet felt.
+- **Datoen er `system.availability.start`** (UTC ISO) — der er intet `broadcastDate`. Robinsons
+  afsnit 4 blev tilgængeligt `2026-09-13T22:00Z` = **mandag kl. 00:00 dansk tid**, hvilket passer
+  med at serien sendes om mandagen.
+- **`content.synopsis` er en STRENG**, ikke et objekt — `synopsis.brief` findes i skemaet, men er
+  null. `viaplay_synopsis()` tager begge former.
+- **Søgningen er løs i koblingen:** "robinson" gav Dexter, Loud House og I Spy. Da TV-træffere
+  lægges **øverst** i Udforsk, kræver `viaplay_search()` at hvert søgeord faktisk står i seriens
+  titel. Uden det filter larmer TV mere end det hjælper.
+- **Id'er:** `feed_id = -crc32('viaplay:' + '/serier/<slug>')` (negativt som Podimos og DR TV's;
+  præfikset gør at samme slug hos DR TV giver et andet id) og
+  `episode_id = rss_stable_id('viaplay:' + system.guid)`.
+- **Web-URL'en er `viaplay.dk`, ikke `content.viaplay.dk`.** `publicPath` er stien uden
+  `/serier/`-præfikset. `viaplay_path_from_url()` normaliserer serie-, sæson- og afsnit-URL'er til
+  **serie-stien**, så søgning og "tilføj via URL" giver samme feed.
+- **`added_via = 'viaplay'`** er nu tilladt i `favorites.add` (allowlisten afviste den før og
+  faldt tilbage til `'search'`, hvorefter TV-mærkatet forsvandt i Favoritter).
+
+**Frontenden kender ikke længere TV på `/drtv/` alene.** `isTvEpisode()` matcher nu også
+`viaplay.dk|com`, `sourceOf()` returnerer "Viaplay" (via `SOURCE_NAMES`) i stedet for det
+hardkodede "DR TV", og teksterne "Se det hos DR TV" / "· ses hos DR TV" siger nu udbyderens navn.
+`favoriteAsPodcast()` mærker både `added_via` 'drtv' og 'viaplay' samt feed-URL'en som fallback.
+**SW-cachen er bumpet `nordpod-v12` → `v13`** (shell-ændring).
+
+**Test:** `php test/test_viaplay.php` (kræver engangsbasen, se afsnittet om drpodcast.nu).
+Den låser URL-normaliseringen, at feed-id'et ikke kolliderer med DR TV's, at søgestøjen
+filtreres fra, at afsnittene er link-out uden `audio_url`, at kommende afsnit ikke slipper med,
+at "Lignende serier"-blokkens produkter ikke slipper med, og at kørsel nummer to ikke laver nye
+id'er.
+
 ## Superfavoritter ★★ + "ryd herunder" fjernet (2026-08-23)
 Nogle podcasts må ikke drukne når et nyt afsnit lander (i dag **Store Penge** og TV-programmet
 **Debatten**). De markeres nu som **superfavoritter**.

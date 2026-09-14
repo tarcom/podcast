@@ -77,6 +77,12 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
         $res = drtv_refresh_feed($pdo, $feedId, $feedUrl);
         return $res === null ? 0 : (int) $res['inserted'];
     }
+    // Viaplay/TV3 på samme måde (se viaplay.php). Betingelsen hænger også her på URL'en, ikke
+    // på `added_via`, så en serie tilføjet med "indsæt URL" opfører sig som en fulgt fra søgningen.
+    if (viaplay_path_from_url($feedUrl) !== null) {
+        $res = viaplay_refresh_feed($pdo, $feedId, $feedUrl);
+        return $res === null ? 0 : (int) $res['inserted'];
+    }
     if ($feedUrl === '') {
         $feedUrl = podcast_backfill_feed_url($config, $pdo, $deviceId, $feedId);
     }
