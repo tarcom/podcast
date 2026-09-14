@@ -61,7 +61,7 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
     $stamp->execute(['dev' => $deviceId, 'feed' => $feedId]);
 
     // Læs feedet selv. Lykkes det, er vi færdige — ellers falder vi tilbage til PI.
-    $urlQ = $pdo->prepare('SELECT feed_url, added_via FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
+    $urlQ = $pdo->prepare('SELECT feed_url, added_via, title FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
     $urlQ->execute(['dev' => $deviceId, 'feed' => $feedId]);
     $fav = $urlQ->fetch() ?: [];
     // Podimo-shows fyldes af HTPC-scraperen (podimo.ingest) — deres feed_url er en HTML-showside,
@@ -80,6 +80,18 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
     if ($feedUrl === '') {
         $feedUrl = podcast_backfill_feed_url($config, $pdo, $deviceId, $feedId);
     }
+    // DR's eget RSS er skåret ned til 40-sek. smagsprøver for de nyeste sæsoner — det fulde
+    // afsnit ligger kun i DR Lyd, og lyd-URL'en kunne ikke skaffes derfra (se drpodcast.php).
+    // drpodcast.nu genudgiver feedet med de rigtige afsnit, og lyden kommer stadig fra DR selv.
+    // Spejlet er en privat tjeneste og kan forsvinde, så `feed_url` på favoritten skiftes ALDRIG:
+    // fejler spejlet, falder vi igennem til DR's eget feed nedenfor, præcis som før.
+    if (drpodcast_is_dr_feed($feedUrl)) {
+        $res = drpodcast_refresh($pdo, $feedId, $feedUrl, (string) ($fav['title'] ?? ''), $max);
+        if ($res !== null) {
+            return (int) ($res['inserted'] ?? 0) + (int) ($res['removedTeasers'] ?? 0);
+        }
+    }
+
     if (podcast_feed_prefers_rss($feedUrl)) {
         $res = rss_refresh_feed($pdo, $feedId, $feedUrl, true, $max);
         if ($res !== null) {

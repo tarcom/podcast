@@ -145,6 +145,15 @@ function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTea
     // indeholder et per-kald-token (fx art19's `?rss_browser=`).
     $byAudio = [];
     $byTitleDate = [];
+    // Titel ALENE er sidste udvej. Nødvendig fordi den samme udsendelse kan stå med to
+    // forskellige datoer i to kilder: DR forsinker udgivelsen i sit eget RSS, så Genstarts
+    // afsnit ligger 3-4 døgn senere dér end på drpodcast.nu (målt 2026-09-14: 801 af 887
+    // fælles titler afveg, typisk 72-96 timer). Uden den her ville et kildeskift give alle
+    // afsnit nye id'er og nulstille hørt-tilstand og lytteposition.
+    // Kun titler der er ENTYDIGE på begge sider bruges — et show med genbrugte afsnitstitler
+    // ("Ugens quiz") må aldrig få to afsnit smeltet sammen.
+    $byTitle = [];
+    $titelAntal = [];
     $q = $pdo->prepare('SELECT episode_id, title, published_at, duration_sec, audio_url FROM podcast_episodes WHERE feed_id = :f');
     $q->execute(['f' => $feedId]);
     $rows = $q->fetchAll();
@@ -153,7 +162,21 @@ function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTea
         if ($audio !== '') {
             $byAudio[$audio] = (int) $r['episode_id'];
         }
-        $byTitleDate[mb_strtolower(trim((string) $r['title'])) . '|' . (int) $r['published_at']] = (int) $r['episode_id'];
+        $titel = mb_strtolower(trim((string) $r['title']));
+        $byTitleDate[$titel . '|' . (int) $r['published_at']] = (int) $r['episode_id'];
+        $titelAntal[$titel] = ($titelAntal[$titel] ?? 0) + 1;
+        $byTitle[$titel] = (int) $r['episode_id'];
+    }
+    foreach ($titelAntal as $t => $n) {
+        if ($n > 1) {
+            unset($byTitle[$t]);
+        }
+    }
+    // Samme entydighedskrav på det indkommende feed.
+    $indAntal = [];
+    foreach ($eps as $e) {
+        $t = mb_strtolower(trim((string) $e['title']));
+        $indAntal[$t] = ($indAntal[$t] ?? 0) + 1;
     }
 
     $upsert = $pdo->prepare(
@@ -172,12 +195,18 @@ function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTea
     $oldestKept = PHP_INT_MAX;
     foreach ($eps as $e) {
         $audio = trim((string) ($e['audio_url'] ?? ''));
-        $key = mb_strtolower(trim((string) $e['title'])) . '|' . (int) $e['published_at'];
+        $titel = mb_strtolower(trim((string) $e['title']));
+        $key = $titel . '|' . (int) $e['published_at'];
         if ($audio !== '' && isset($byAudio[$audio])) {
             $epId = $byAudio[$audio];
             $reused++;
         } elseif (isset($byTitleDate[$key])) {
             $epId = $byTitleDate[$key];
+            $reused++;
+        } elseif (isset($byTitle[$titel]) && ($indAntal[$titel] ?? 0) === 1
+                  && !isset($seen[$byTitle[$titel]])) {
+            // Samme titel, anden dato — og id'et er ikke allerede brugt i denne kørsel.
+            $epId = $byTitle[$titel];
             $reused++;
         } else {
             $epId = rss_stable_id((string) $e['guid']);

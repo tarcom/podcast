@@ -177,7 +177,74 @@ fejler. Ny action **`feed.refreshRss&id=<feedId>`** tvinger en genindlæsning.
   Sara & Monopolet 254 ind. Lyd verificeret (`audio/mpeg`, 82 MB, HTTP 200 efter 302-redirect).
 - **DR's 2026-sæson er IKKE i noget RSS** — kun i DR Lyd. Se næste afsnit.
 
+## DR: fulde afsnit via drpodcast.nu (2026-09-14)
+**DR-sæsonerne fra 2025-26 er ikke længere link-out — de afspilles i app'en.** Det løser det, der
+stod som uløst i afsnittet "DR Lyd: 2026-sæsonen" nedenfor: DR lægger kun en 40-sek. smagsprøve i
+sit offentlige RSS, og lyd-URL'en kunne ikke skaffes fra DR Lyd (`api.dr.dk/radio/v4` giver 401 og
+kræver en `x-apikey`, DR kalder serverside).
+
+**[drpodcast.nu](https://drpodcast.nu/) genudgiver DR's feeds med de rigtige afsnit** — 677 shows,
+ét feed pr. slug på `https://drpodcast.nu/<slug>/feed.xml`. Sitet **hoster ikke lyd**:
+enclosure-URL'erne peger på DR's egen `api.dr.dk/radio/v1/assetlinks/...`, som svarer 302 til DR's
+Akamai-CDN. Lyden hentes altså stadig fra DR; spejlet leverer kun den henvisning, DR har fjernet
+fra sit eget feed.
+
+- **`api/drpodcast.php`** er hele integrationen. `drpodcast_is_dr_feed()` genkender DR-podcasts
+  (ikke DR TV), `drpodcast_slug_for()` finder showets slug, og `drpodcast_refresh()` henter det.
+- **Slug'en gættes først ud fra DR's filnavn** (`ubegribeligt.xml` → `ubegribeligt`) og ellers på
+  **normaliseret titel** via `chart_norm()`. Begge dele er nødvendige: Sara & Monopolet hedder
+  `mads-monopolet-podcast.xml` hos DR og `sara-og-monopolet` på spejlet.
+- **Forsiden parses for `data-slug`/`data-title`** (der er intet JSON-API) og caches et døgn i
+  `podcast_chart_cache` under nøglen `drpodcast` — samme generiske tabel som hitlisterne, så
+  ingen migrering var nødvendig.
+- **`feed_url` på favoritten skiftes ALDRIG.** Spejlet vælges ved hentning i
+  `podcast_refresh_feed()` (og i `feed.refreshRss`), og fejler det, læses DR's eget feed som før.
+  Spejlet er en privat tjeneste, der genudgiver noget DR bevidst har trukket tilbage — den kan
+  forsvinde, og så skal app'en bare falde tilbage til den tilstand den havde.
+
+### Titel-fallback i `rss_refresh_feed` — uden den ville hørt-tilstand blive nulstillet
+**Genstart er forskudt:** DR forsinker udgivelsen i sit eget RSS, så de samme afsnit står med
+datoer 3-4 døgn senere end på spejlet (målt 2026-09-14: 801 af 887 fælles titler afveg, typisk
+72-96 timer). Id-genbruget hang på lyd-URL og på titel+dato, og **ingen af delene matcher** ved et
+kildeskift. `rss_refresh_feed()` har derfor nu **titel alene** som sidste udvej — kun for titler
+der er entydige på *begge* sider, og kun hvis id'et ikke allerede er brugt i samme kørsel, så to
+afsnit aldrig kan smelte sammen.
+
+### Målt, før og efter (afspillelige afsnit i cachen)
+Tørkørsel mod en kopi af produktionens cache (`test/toerkoersel_drpodcast.php`), derefter bekræftet
+live med `feed.refreshRss`:
+
+| Show | Før | Efter |
+|---|---|---|
+| Ubegribeligt | 80 | **138** |
+| Sara & Monopolet | 192 | **200** |
+| Brinkmanns briks | 187 | **200** |
+| Genstart | 102 | **105** |
+| Akkurat med Clement | 62 | 62 |
+| Hjerteflimmer for voksne | 60 | 60 |
+
+Ingen afsnit mistede sit `episode_id`. De to 40-sek. teasere pr. show blev ryddet som de skal,
+og **link-out-rækkerne blev afspillelige med samme id** (Ubegribeligt 29, Brinkmann 13, Sara 10),
+så selv manuelt satte hørt-mærker overlevede. `scrape_dr.py` fandt bagefter **0 nye link-outs** —
+alt i DR Lyd er nu dækket af et afspilleligt afsnit. "Nanoteknologi", som var selve
+eksempel-afsnittet på problemet, ligger nu i appen med 3443 sek. lyd.
+
+**`scrape_dr.py` kører stadig** (cron `17 * * * *`). Den laver ingen nye link-outs, men dens
+`prunedRedundant` er sikkerhedsnettet, hvis spejlet et øjeblik ikke dækker et afsnit. Sluk den
+ikke uden at have et andet sikkerhedsnet.
+
+### Test
+`test/hent_produktion.py` henter Allans rigtige DR-favoritter og deres cachede afsnit fra den live
+app til `/tmp/produktion.json`; `test/toerkoersel_drpodcast.php` seeder en engangs-MariaDB med dem,
+kører den nye kode, simulerer `dr.ingest`'s oprydning og kræver at intet rigtigt afsnit mister sit
+id, at antallet af afspillelige afsnit stiger, og at der ikke står link-out-dubletter tilbage.
+Kør den før enhver ændring i kildevalget — den er billig og fanger præcis det, der gør ondt.
+
 ## DR Lyd: 2026-sæsonen (undersøgt 2026-07-28)
+**Overhalet 2026-09-14 — se afsnittet om drpodcast.nu ovenfor.** Afsnittene herunder er stadig
+rigtige om DR's egne endpoints, men konklusionen "2026-sæsonen er realistisk link-out" holder
+ikke længere.
+
 DR lægger kun en **40-sek teaser** i det offentlige feed; det fulde afsnit (57 min) ligger i DR Lyd.
 Fx teaser "Nanoteknologi" (40 s, 25/6-2026) ↔ rigtigt afsnit "Nanoteknologi" (**57 min**, samme dato).
 - **Afsnitsdata kan hentes uden login:** show-siden (`https://www.dr.dk/lyd/special-radio/

@@ -9,6 +9,7 @@ require __DIR__ . '/podcast_store.php';
 require __DIR__ . '/charts.php';
 require __DIR__ . '/rssfeed.php';
 require __DIR__ . '/drtv.php';
+require __DIR__ . '/drpodcast.php';
 
 $action = $_GET['action'] ?? 'health';
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
@@ -183,14 +184,31 @@ try {
             $deviceId = $deviceFromGet();
             $feedId = (int) ($_GET['id'] ?? 0);
             $pdo = db($config);
-            $q = $pdo->prepare('SELECT feed_url FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
+            $q = $pdo->prepare('SELECT feed_url, title FROM podcast_favorites WHERE device_id = :dev AND feed_id = :feed');
             $q->execute(['dev' => $deviceId, 'feed' => $feedId]);
-            $feedUrl = (string) ($q->fetchColumn() ?: '');
+            $fav = $q->fetch() ?: [];
+            $feedUrl = trim((string) ($fav['feed_url'] ?? ''));
             if ($feedUrl === '') {
                 json_response(['status' => false, 'error' => 'unknown feed for device'], 404);
             }
-            $res = rss_refresh_feed($pdo, $feedId, $feedUrl);
-            json_response(['status' => $res !== null, 'feedUrl' => $feedUrl] + ($res ?? []));
+            // Samme rækkefølge som ved den automatiske opdatering: DR-feeds læses fra
+            // drpodcast.nu, og først hvis spejlet svigter, fra DR's eget feed.
+            $res = null;
+            $brugtUrl = $feedUrl;
+            if (drpodcast_is_dr_feed($feedUrl)) {
+                $slug = drpodcast_slug_for($pdo, $feedUrl, (string) ($fav['title'] ?? ''));
+                if ($slug !== null) {
+                    $res = rss_refresh_feed($pdo, $feedId, drpodcast_feed_url($slug));
+                    if ($res !== null) {
+                        $brugtUrl = drpodcast_feed_url($slug);
+                    }
+                }
+            }
+            if ($res === null) {
+                $brugtUrl = $feedUrl;
+                $res = rss_refresh_feed($pdo, $feedId, $feedUrl);
+            }
+            json_response(['status' => $res !== null, 'feedUrl' => $brugtUrl] + ($res ?? []));
 
         // Popularitet: Apples danske hitlister (top 50 podcasts + 25 trending afsnit).
         // ?force=1 springer 6-timers cachen over.
