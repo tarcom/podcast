@@ -240,6 +240,16 @@ kører den nye kode, simulerer `dr.ingest`'s oprydning og kræver at intet rigti
 id, at antallet af afspillelige afsnit stiger, og at der ikke står link-out-dubletter tilbage.
 Kør den før enhver ændring i kildevalget — den er billig og fanger præcis det, der gør ondt.
 
+Engangsbasen ligger på HTPC's MariaDB og oprettes sådan her, hvis den er væk:
+
+```bash
+sudo mariadb -e "CREATE DATABASE IF NOT EXISTS podcast_toer;
+  CREATE USER IF NOT EXISTS podtest@localhost IDENTIFIED BY 'podtest';
+  GRANT ALL ON podcast_toer.* TO podtest@localhost; FLUSH PRIVILEGES;"
+```
+
+`test/test_viaplay.php` bruger den samme base.
+
 ## DR Lyd: 2026-sæsonen (undersøgt 2026-07-28)
 **Overhalet 2026-09-14 — se afsnittet om drpodcast.nu ovenfor.** Afsnittene herunder er stadig
 rigtige om DR's egne endpoints, men konklusionen "2026-sæsonen er realistisk link-out" holder
