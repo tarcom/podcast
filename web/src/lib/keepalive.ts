@@ -30,6 +30,14 @@
 const I_TESLA = typeof navigator !== 'undefined' && /\bTesla\//.test(navigator.userAgent)
 const LIMIT_MS = I_TESLA ? 2 * 60 * 60 * 1000 : 10 * 60 * 1000
 
+// Inde i Android-app'en (se projektet `podcast-android`) er hele trickget overflødigt:
+// siden kører dér i app'ens egen proces, og en foreground service holder processen i live
+// uden tidsgrænse. Kørte stilheden alligevel, ville den koste batteri til ingen nytte — og
+// værre: den ville stjæle lydfokus fra app'ens egen medie-session, så bilen og låseskærmen
+// viste en tavs strøm i stedet for afsnittet. App'en sætter markøren i sin user agent.
+const I_ANDROID_APP =
+  typeof navigator !== 'undefined' && /\bAllDKPodcastsAndroid\//.test(navigator.userAgent)
+
 // VIGTIGT: lyden må hverken være `muted` eller have `volume = 0`. En dæmpet lydstrøm tæller
 // ikke som "afspiller lyd", og så holder trickget ingenting i live. Filen er tavs i stedet.
 function silentWavUrl(seconds = 1): string {
@@ -63,6 +71,7 @@ let timer = 0
 
 /** Start (eller forlæng) keep-alive. Kaldes når afspilningen sættes på pause. */
 export function startKeepAlive(): void {
+  if (I_ANDROID_APP) return
   if (!el) {
     el = new Audio(silentWavUrl())
     el.loop = true
