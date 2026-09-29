@@ -10,7 +10,11 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/.ftp-credentials"
-REMOTE_ROOT="/podcast"
+REMOTE_ROOT="/webroots/www/podcast"
+# one.com moved the FTP root above the web root in the 2026-09-29 migration (now
+# webroots/www/). If it is missing, --ftp-create-dirs would upload into a dead folder.
+curl -s --user "${FTP_USER}:${FTP_PASS}" --list-only "ftp://${FTP_HOST}/webroots/www/" >/dev/null \
+  || { echo "ERROR: ftp://${FTP_HOST}/webroots/www/ not found — has the FTP root moved again?"; exit 1; }
 
 upload() { # <local> <remote-path>
     curl -sS --fail --ftp-create-dirs --user "${FTP_USER}:${FTP_PASS}" \
