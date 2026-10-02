@@ -129,10 +129,20 @@ button:disabled { opacity: 0.6; cursor: default; }
 /* "trender i Danmark"-mærkat på et afsnit */
 .hot { font-style: normal; font-weight: 700; font-size: 10px; letter-spacing: 0.03em;
        color: #fff; background: var(--terracotta); border-radius: 5px; padding: 1px 5px; margin-right: 6px; }
-.star { background: none; border: none; border-left: 1px solid var(--line); font-size: 20px; width: 46px; cursor: pointer; color: var(--muted); }
-.star.on { color: var(--terracotta); }
-/* 3. trin: superfavorit. To stjerner skal fylde det samme som én, ellers hopper kortet. */
-.star.super { color: var(--gold); font-size: 15px; letter-spacing: -1px; }
+/* Stjerner på kortet: tre knapper i en fast kolonne, så kortet ikke hopper når antallet skifter.
+   Under dem "+ Følg" (ikke fulgt) eller "Slet" (fulgt) — sletning er aldrig en stjerne. */
+.rate { flex-shrink: 0; width: 96px; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 2px; border-left: 1px solid var(--line); padding: 4px 2px; }
+.rate-stars { display: flex; }
+.rate-star { background: none; border: none; padding: 2px 3px; font-size: 22px; line-height: 1;
+  color: var(--muted); cursor: pointer; }
+.rate-star.on { color: var(--terracotta); }
+/* ★★ og ★★★ er gyldne ligesom markeringen i køen; én stjerne er en almindelig favorit. */
+.rate.lvl-2 .rate-star.on, .rate.lvl-3 .rate-star.on { color: var(--gold); }
+.rate-act { background: none; border: 1px solid transparent; font: inherit; font-size: 11px; font-weight: 700;
+  color: var(--muted); padding: 2px 8px; border-radius: 6px; cursor: pointer; }
+.rate-act.follow { color: var(--moss); }
+.rate-act.del.confirm { background: #b3261e; border-color: #b3261e; color: #fff; }
 
 /* episodes */
 .episodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
@@ -206,11 +216,20 @@ button:disabled { opacity: 0.6; cursor: default; }
 .sup-chip { font-style: normal; font-weight: 700; font-size: 11px; letter-spacing: -1px;
   color: #fff; background: var(--gold); border-radius: 5px; padding: 1px 6px; margin-right: 6px; }
 
-/* kø-filter: kun superfavoritter. Ren symbolknap ved siden af Opdatér. */
+/* ★★★: lidt kraftigere flade end ★★, så de vigtigste kan skelnes i en lang liste. */
+.episode.super.s3 { background: #fbefcc; border-bottom-color: #e6cf94; }
+
+/* kø-filter: ★ ★★ ★★★ 📺 TV på egen række under overskriften (der er ikke plads ved Opdatér). */
 .head-actions { display: flex; align-items: center; gap: 8px; }
-.superfilter { border: 1px solid var(--line); background: var(--card); color: var(--muted);
-  border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 14px; letter-spacing: -1px; cursor: pointer; }
-.superfilter.on { background: var(--gold); border-color: var(--gold); color: #fff; }
+.qfilter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.qchip { border: 1px solid var(--line); background: var(--card); color: var(--muted);
+  border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+.qchip.stars { letter-spacing: -1px; }
+.qchip.stars.on { background: var(--gold); border-color: var(--gold); color: #fff; }
+/* samme blå som TV-mærkatet på kortene og DR TV-kilden på rækkerne */
+.qchip.tv { font-size: 13px; font-weight: 700; }
+.qchip.tv.on { background: #1a5fb4; border-color: #1a5fb4; color: #fff; }
+.qchip.clear { border-style: dashed; font-size: 13px; }
 
 /* feed-tjek: cachen står allerede på skærmen, det her viser kun at vi kigger efter nyt */
 .feedcheck { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 10px 0 2px; }

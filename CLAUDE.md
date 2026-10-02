@@ -19,14 +19,19 @@ er lette at snuble over.
   2026-08-10: **`nodejs` 22.22 + `npm` fra Ubuntu 26.04's apt** (`sudo apt install nodejs npm`).
   Ingen nvm længere, ingen `nvm use`. Det medbragte `node_modules` (installeret under node 20)
   virkede uændret under node 22 — rolldowns binding er N-API og skulle ikke geninstalleres.
-- **`api/config.php`** (Podcast Index-nøgler + MySQL-creds) er **gitignored** og ligger KUN på
-  serveren. `deploy.sh api` uploader den bevidst med. Samme MySQL som resten af aogj.com:
-  host `aogj.com.mysql`, bruger/db `aogj_com`.
+- **`api/config.php`** (Podcast Index-nøgler + MySQL-creds) er **gitignored** og findes i
+  `~/podcast/api/` her på HTPC og på serveren. **`deploy.sh api` uploader den med — og
+  overskriver dermed serverens kopi med den lokale.** Samme MySQL som resten af aogj.com, men
+  siden one.coms flytning 2026-09-29 er det **host `localhost`, bruger/db `cqbm4ow1y_aogj_com`**
+  (kodeordet er uændret). Den gamle `aogj.com.mysql`/`aogj_com` giver `Access denied`. Serverens
+  kopi blev rettet ved flytningen, den lokale ikke, så `deploy.sh api` tog appen ned 2026-10-02
+  (alle kald svarede 500) i nogle minutter. Den lokale er rettet nu. Ret altid begge, hvis noget
+  skifter.
 - **Ingen cron.** Refresh sker "ved åbning" — men **ikke længere inline i kø-svaret**: frontenden
   henter cachen først og kalder `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor).
   Bevidst uden cron — one.com/simply-cron er ikke en forudsætning.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
-  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v12`**).
+  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v15`**).
   Lyd-cachen **`nordpod-audio-v1`** er en anden cache og skal blive stående — se afsnittet om
   offline-download.
 - **Installerbarhed (fixet 2026-07-27):** `web/index.html` manglede `<link rel="manifest">` (Vite
@@ -650,7 +655,38 @@ filtreres fra, at afsnittene er link-out uden `audio_url`, at kommende afsnit ik
 at "Lignende serier"-blokkens produkter ikke slipper med, og at kørsel nummer to ikke laver nye
 id'er.
 
+## Stjerner 1-3 og 📺 TV-filter i køen (2026-10-02)
+Afløser stjernerundturen fra afsnittet om superfavoritter nedenfor.
+
+- **Tre stjerneknapper på hvert kort** (`PodcastCard`, i både Udforsk og Favoritter): tryk på
+  stjerne nr. 1, 2 eller 3 sætter præcis det antal. **En stjerne fjerner aldrig podcasten.** Før
+  var stjernen én knap, der kørte ☆ → ★ → ★★ → fjernet, så ét tryk for meget slettede den.
+  Under stjernerne står **"+ Følg"** (ikke fulgt, følger med én stjerne) eller **"Slet"**.
+- **Slet kræver to tryk:** første tryk gør knappen rød ("Slet?"), andet sletter; efter 4 sek.
+  falder den tilbage. Bevidst **ikke** `window.confirm`, som ikke er til at regne med i
+  Android-app'ens WebView. Sletter man fra Udforsk, bliver kortet stående som ☆☆☆ + "+ Følg".
+- **Data:** samme kolonne `priority`, nu **0-2 = ★ til ★★★** (`favorites.setPriority` klemmer
+  til 0-2). De gamle superfavoritter (priority 1) er altså ★★ uden migrering.
+  `starsById`/`starLevel` i App.tsx er den eneste oversættelse mellem de to.
+- **Optimistisk:** stjernerne skifter med det samme, og en ny favorit tændes, før
+  `favorites.add` (1-3 sek., henter feedet) har svaret. `loadFavorites()` i `finally` retter
+  op, hvis kaldet fejler. `pendingAdds` sørger for, at et hurtigt tryk videre (★ → ★★★ mens
+  tilføjelsen kører) venter på at rækken findes, ellers rammer UPDATE'en ingenting.
+- **Markering i køen:** uhørte afsnit fra ★★ og ★★★ har `.episode.super` + et mærkat med
+  stjernerne; ★★★ har desuden `.s3` (lidt kraftigere gul). ★ er en almindelig favorit.
+- **Filter i Kø-fanen** på egen række under overskriften: **★ ★★ ★★★ 📺 TV** + "Vis alle".
+  Stjernerne kan tændes sammen (★★ + ★★★ = alt med mindst to), TV skærer derudover ned til
+  TV-programmer (`tvIds` fra favoritterne eller `isTvEpisode`). Gemmes **ikke** mellem besøg,
+  af samme grund som før. Erstatter ★★-knappen ved Opdatér.
+- **Afprøvet** med headless Chrome mod det nye byg via en lille proxy, der serverede `web/dist`
+  og sendte API-kaldene til aogj.com med `allan-main` byttet ud med et test-device (seedet med
+  fire af de rigtige favoritter, ryddet op bagefter). Alle tjek gik igennem: 3 → 1 → 3
+  stjerner uden at forsvinde, Slet i to tryk og tilbagefaldet, filtrene (★★★ gav 62 af 200,
+  📺 TV 17 Debatten-afsnit), følg direkte med ★★ fra Udforsk og ingen konsolfejl.
+  **Varnish giver 429** ved mange API-kald i træk fra et script; læg pauser ind.
+
 ## Superfavoritter ★★ + "ryd herunder" fjernet (2026-08-23)
+*Stjernerundturen og ★★-filteret herunder er afløst af afsnittet ovenfor (2026-10-02).*
 Nogle podcasts må ikke drukne når et nyt afsnit lander (i dag **Store Penge** og TV-programmet
 **Debatten**). De markeres nu som **superfavoritter**.
 

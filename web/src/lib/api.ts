@@ -141,7 +141,7 @@ export async function removeFavorite(deviceId: string, feedId: number): Promise<
   await apiDelete({ action: 'favorites.remove' }, { deviceId, feedId })
 }
 
-// Superfavorit til/fra (stjernens 3. trin). Egen action frem for et felt på favorites.add, så
+// Stjerner: priority 0-2 = ★ til ★★★. Egen action frem for et felt på favorites.add, så
 // markeringen ikke kan nulstilles af en almindelig gen-tilføjelse af podcasten.
 export async function setFavoritePriority(deviceId: string, feedId: number, priority: number): Promise<void> {
   await apiPost({ deviceId, feedId, priority }, { action: 'favorites.setPriority' })

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS podcast_favorites (
   language     VARCHAR(80)  NULL,
   feed_url     TEXT NULL,
   added_via    VARCHAR(16)  NOT NULL DEFAULT 'search' COMMENT 'search | url',
-  priority     TINYINT      NOT NULL DEFAULT 0 COMMENT '0 = almindelig favorit, 1 = superfavorit (nye afsnit markeres ekstra i koen)',
+  priority     TINYINT      NOT NULL DEFAULT 0 COMMENT 'stjerner minus en: 0 = 1 stjerne, 1 = 2, 2 = 3 (2-3 stjerner markeres ekstra i koen)',
   last_fetched DATETIME NULL COMMENT 'when episodes for this feed were last refreshed',
   created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_fav_device_feed (device_id, feed_id),

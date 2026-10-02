@@ -180,21 +180,29 @@ function groupByDay(eps: EpisodeRow[]): DayGroup[] {
 export default function App() {
   const deviceId = useMemo(getDeviceId, [])
   const [tab, setTab] = useState<Tab>('queue')
-  // Kø-filter: vis kun afsnit fra superfavoritter. Bevidst IKKE gemt mellem besøg — en kø der
-  // åbner halvtom uden synlig grund ligner en fejl.
-  const [onlySuper, setOnlySuper] = useState(false)
+  // Kø-filter: stjerner (★/★★/★★★, flere kan være tændt på én gang) og 📺 TV. Bevidst IKKE
+  // gemt mellem besøg — en kø der åbner halvtom uden synlig grund ligner en fejl.
+  const [starFilter, setStarFilter] = useState<number[]>([])
+  const [onlyTv, setOnlyTv] = useState(false)
 
   // data — startværdien er sidste øjebliksbillede, så app'en har indhold med det samme og
   // også kan åbnes helt uden dækning. Netværkssvaret overskriver det når det kommer.
   const [favorites, setFavorites] = useState<Favorite[]>(() => readSnapshot<Favorite[]>('favorites') || [])
-  const favIds = useMemo(() => new Set(favorites.map((f) => f.feedId)), [favorites])
-  // Superfavoritter (★★): podcasts hvis nye afsnit ikke må drukne i køen. De flytter sig IKKE i
-  // listen — kronologien er hele pointen med køen — de markeres kraftigere på selve rækken.
-  const superIds = useMemo(() => new Set(favorites.filter((f) => f.priority).map((f) => f.feedId)), [favorites])
-  // 0 = ikke fulgt, 1 = favorit, 2 = superfavorit. Stjernen er den samme knap i alle tre trin.
-  const starLevel = useCallback(
-    (feedId: number) => (superIds.has(feedId) ? 2 : favIds.has(feedId) ? 1 : 0),
-    [favIds, superIds],
+  // Stjerner pr. fulgt podcast: 1-3, gemt som priority 0-2 (de gamle superfavoritter har
+  // priority 1 og er altså ★★). Podcasts med 2-3 stjerner må ikke drukne i køen: de flytter sig
+  // IKKE i listen — kronologien er hele pointen med køen — men markeres på selve rækken.
+  const starsById = useMemo(
+    () => new Map(favorites.map((f) => [f.feedId, 1 + Math.min(2, Math.max(0, f.priority || 0))])),
+    [favorites],
+  )
+  // 0 = ikke fulgt, ellers 1-3 stjerner.
+  const starLevel = useCallback((feedId: number) => starsById.get(feedId) || 0, [starsById])
+  // favorites.add der stadig er undervejs, pr. feed — se setStars.
+  const pendingAdds = useRef(new Map<number, Promise<void>>())
+  // Fulgte TV-serier (DR TV/Viaplay) — til 📺 TV-filteret i køen.
+  const tvIds = useMemo(
+    () => new Set(favorites.filter((f) => favoriteAsPodcast(f).kind === 'tv').map((f) => f.feedId)),
+    [favorites],
   )
   const [queue, setQueue] = useState<EpisodeRow[]>(() => readSnapshot<EpisodeRow[]>('queue') || [])
   const [loadingQueue, setLoadingQueue] = useState(false)
@@ -424,30 +432,66 @@ export default function App() {
     return r
   }, [results, langMode])
 
-  // ---------- favorite toggle ----------
-  // Stjernen er en rundtur i tre trin på én knap: ☆ (ikke fulgt) → ★ (favorit) → ★★
-  // (superfavorit) → ☆ (fjernet). `title` på knappen siger hvad næste tryk gør, så man ikke
-  // behøver at kende cyklussen udenad.
-  const toggleFavorite = useCallback(
-    async (p: Podcast) => {
-      if (!favIds.has(p.id)) {
-        // 'drtv'/'viaplay' gør at favoritten kan mærkes som TV bagefter; selve opdateringen
-        // af afsnit hænger på feed-URL'en, ikke på dette felt.
-        await addFavorite(deviceId, p, p.kind === 'tv' ? tvVia(p) : 'search')
-      } else if (!superIds.has(p.id)) {
-        // ★ → ★★: kun markeringen ændrer sig. Ingen grund til at hente kø eller feeds igen.
-        await setFavoritePriority(deviceId, p.id, 1)
-        await loadFavorites()
+  // ---------- stjerner og slet ----------
+  // Tre stjerneknapper: tryk på nr. 1, 2 eller 3 sætter præcis det antal, så en podcast kan gå
+  // fra ★★★ til ★ uden at forsvinde. Indtil 2026-10-02 var stjernen én knap der kørte rundt
+  // (☆ → ★ → ★★ → fjernet), og ét tryk for meget slettede podcasten. At slette er nu sin egen
+  // knap på kortet (PodcastCard), og den kræver to tryk.
+  const setStars = useCallback(
+    async (p: Podcast, stars: number) => {
+      const current = starLevel(p.id)
+      if (current === stars) return
+      const priority = stars - 1
+      if (current > 0) {
+        // Kun markeringen ændrer sig: vis den med det samme, og hent hverken kø eller feeds.
+        setFavorites((fs) => fs.map((f) => (f.feedId === p.id ? { ...f, priority } : f)))
+        try {
+          // Trykker man videre fra ★ til ★★★ mens favorites.add stadig kører, skal rækken
+          // findes på serveren før den kan opdateres — ellers rammer UPDATE'en ingenting.
+          await pendingAdds.current.get(p.id)
+          await setFavoritePriority(deviceId, p.id, priority)
+        } finally {
+          await loadFavorites()
+        }
         return
-      } else {
-        await removeFavorite(deviceId, p.id)
       }
-      await loadFavorites()
+      // 'drtv'/'viaplay' gør at favoritten kan mærkes som TV bagefter; selve opdateringen
+      // af afsnit hænger på feed-URL'en, ikke på dette felt.
+      const via = p.kind === 'tv' ? tvVia(p) : 'search'
+      // favorites.add henter feedet på serveren (1-3 sek.) — stjernerne tændes med det samme.
+      setFavorites((fs) => [
+        ...fs,
+        { feedId: p.id, title: p.title, image: p.image, author: p.author, language: p.language, feedUrl: p.feedUrl, addedVia: via, priority },
+      ])
+      const adding = (async () => {
+        await addFavorite(deviceId, p, via)
+        if (priority > 0) await setFavoritePriority(deviceId, p.id, priority)
+      })()
+      pendingAdds.current.set(p.id, adding.catch(() => {}))
+      try {
+        await adding
+      } finally {
+        pendingAdds.current.delete(p.id)
+        await loadFavorites()
+      }
       await loadQueue()
       // Nyfulgt podcast har ingen cachede afsnit endnu — hent dem i baggrunden.
       refreshFromFeeds()
     },
-    [favIds, superIds, deviceId, loadFavorites, loadQueue, refreshFromFeeds],
+    [starLevel, deviceId, loadFavorites, loadQueue, refreshFromFeeds],
+  )
+
+  const deleteFavorite = useCallback(
+    async (p: Podcast) => {
+      setFavorites((fs) => fs.filter((f) => f.feedId !== p.id))
+      try {
+        await removeFavorite(deviceId, p.id)
+      } finally {
+        await loadFavorites()
+      }
+      await loadQueue()
+    },
+    [deviceId, loadFavorites, loadQueue],
   )
 
   // ---------- podcast detail ----------
@@ -810,8 +854,21 @@ export default function App() {
   const unheardCount = queue.filter((e) => !e.playedAt).length
   // Filteret skærer kun i det der VISES; tælleren i toppen og badget på fanen bliver ved med at
   // gælde hele køen, så et tændt filter ikke ser ud som om afsnittene er forsvundet.
-  const superQueue = useMemo(() => queue.filter((e) => superIds.has(e.feedId)), [queue, superIds])
-  const shownQueue = onlySuper ? superQueue : queue
+  // Stjernerne virker som "en af disse" (★★ + ★★★ = alt med mindst to), TV som "og TV".
+  const filterOn = starFilter.length > 0 || onlyTv
+  const shownQueue = useMemo(
+    () =>
+      filterOn
+        ? queue.filter(
+            (e) =>
+              (starFilter.length === 0 || starFilter.includes(Math.max(1, starLevel(e.feedId)))) &&
+              (!onlyTv || tvIds.has(e.feedId) || isTvEpisode(e)),
+          )
+        : queue,
+    [queue, filterOn, starFilter, onlyTv, starLevel, tvIds],
+  )
+  const toggleStarFilter = (n: number) =>
+    setStarFilter((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n].sort()))
 
   // ---------- Udforsk-blokke ----------
   // Bygges her, fordi rækkefølgen skifter: uden søgning står hitlisten øverst (den er
@@ -882,7 +939,8 @@ export default function App() {
             podcast={p}
             level={starLevel(p.id)}
             chartRank={rankForPodcast(p.title)}
-            onStar={() => toggleFavorite(p)}
+            onStars={(n) => setStars(p, n)}
+            onDelete={() => deleteFavorite(p)}
             onOpen={() => openDetail(p)}
           />
         ))}
@@ -985,7 +1043,7 @@ export default function App() {
 
       {tab === 'favorites' && (
         <section className="panel">
-          {favorites.length === 0 && <p className="muted">Ingen favoritter endnu — find nogle under Udforsk og tryk på stjernen.</p>}
+          {favorites.length === 0 && <p className="muted">Ingen favoritter endnu — find nogle under Udforsk og giv dem en, to eller tre stjerner.</p>}
           <div className="grid">
             {favorites.map((f) => (
               <PodcastCard
@@ -993,7 +1051,8 @@ export default function App() {
                 podcast={favoriteAsPodcast(f)}
                 level={starLevel(f.feedId)}
                 chartRank={rankForPodcast(f.title)}
-                onStar={() => toggleFavorite(favoriteAsPodcast(f))}
+                onStars={(n) => setStars(favoriteAsPodcast(f), n)}
+                onDelete={() => deleteFavorite(favoriteAsPodcast(f))}
                 onOpen={() => openDetail(f)}
               />
             ))}
@@ -1006,23 +1065,47 @@ export default function App() {
           <div className="panel-head">
             <h2>Nyeste afsnit</h2>
             <div className="head-actions">
-              {/* Filter: kun superfavoritter. Symbolet ER mærkatet — samme ★★ som på rækkerne. */}
-              {superIds.size > 0 && (
-                <button
-                  className={`superfilter ${onlySuper ? 'on' : ''}`}
-                  onClick={() => setOnlySuper((v) => !v)}
-                  title={onlySuper ? 'Vis alle afsnit igen' : 'Vis kun afsnit fra dine superfavoritter'}
-                  aria-pressed={onlySuper}
-                  aria-label="Vis kun superfavoritter"
-                >
-                  ★★
-                </button>
-              )}
               <button className="ghost" onClick={() => loadQueue().then(refreshFromFeeds)} disabled={loadingQueue || checkingFeeds}>
                 {loadingQueue || checkingFeeds ? 'Opdaterer…' : 'Opdatér'}
               </button>
             </div>
           </div>
+
+          {/* Filter: ★/★★/★★★ og 📺 TV. Symbolerne ER mærkaterne — de samme som på rækkerne og
+              på kortene. Stjernerne kan tændes sammen (★★ + ★★★ = alt med mindst to). */}
+          {favorites.length > 0 && (
+            <div className="qfilter" role="group" aria-label="Filtrér køen">
+              {[1, 2, 3].map((n) => {
+                const on = starFilter.includes(n)
+                const label = n === 1 ? '1 stjerne' : `${n} stjerner`
+                return (
+                  <button
+                    key={n}
+                    className={`qchip stars ${on ? 'on' : ''}`}
+                    onClick={() => toggleStarFilter(n)}
+                    title={on ? `Skjul podcasts med ${label} igen` : `Vis afsnit fra podcasts med ${label}`}
+                    aria-pressed={on}
+                    aria-label={label}
+                  >
+                    {'★'.repeat(n)}
+                  </button>
+                )
+              })}
+              <button
+                className={`qchip tv ${onlyTv ? 'on' : ''}`}
+                onClick={() => setOnlyTv((v) => !v)}
+                title={onlyTv ? 'Vis podcasts igen' : 'Vis kun TV-programmer (DR TV og Viaplay)'}
+                aria-pressed={onlyTv}
+              >
+                📺 TV
+              </button>
+              {filterOn && (
+                <button className="qchip clear" onClick={() => { setStarFilter([]); setOnlyTv(false) }}>
+                  Vis alle
+                </button>
+              )}
+            </div>
+          )}
 
           {canDownload && (
             <div className="bulkbar">
@@ -1055,17 +1138,17 @@ export default function App() {
 
           {!queueLoaded && <p className="muted">Henter køen…</p>}
           {queueLoaded && favorites.length === 0 && <p className="muted">Følg nogle podcasts, så samler vi de nyeste afsnit her.</p>}
-          {queueLoaded && favorites.length > 0 && !onlySuper && unheardCount === 0 && !checkingFeeds && <p className="muted">Alt er hørt 🎉</p>}
-          {queueLoaded && onlySuper && superQueue.length === 0 && (
-            <p className="muted">Ingen afsnit fra dine superfavoritter i køen lige nu — tryk ★★ igen for at se alle.</p>
+          {queueLoaded && favorites.length > 0 && !filterOn && unheardCount === 0 && !checkingFeeds && <p className="muted">Alt er hørt 🎉</p>}
+          {queueLoaded && filterOn && shownQueue.length === 0 && (
+            <p className="muted">Ingen afsnit i køen passer til filteret lige nu — tryk “Vis alle” for at se hele køen.</p>
           )}
 
           {/* Hele kronologien vises — også de HØRTE afsnit (2026-08-21). De forsvandt før ud af
               listen, så man mistede overblikket over hvad man havde lyttet til; nu bliver de
               liggende på deres plads og er tonet ned med et "✓ Hørt"-mærkat (`.episode.heard`).
               Afsnit man er midt i markeres på samme måde med `.episode.continuing`, og afsnit fra
-              en superfavorit med `.episode.super` + ★★. Ingen af dem flytter sig i listen — det
-              eneste der kan ændre hvad der står her, er ★★-filteret øverst. */}
+              en podcast med ★★ eller ★★★ med `.episode.super` + stjernerne. Ingen af dem flytter
+              sig i listen — det eneste der kan ændre hvad der står her, er filteret øverst. */}
           {groupByDay(shownQueue).map((g) => (
             <div className="daygroup" key={g.key}>
               <div className="day-head">
@@ -1083,7 +1166,7 @@ export default function App() {
                   <EpisodeItem
                     key={ep.episodeId}
                     ep={ep}
-                    sup={superIds.has(ep.feedId)}
+                    stars={starLevel(ep.feedId)}
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     chartRank={rankForEpisode(ep.title)}
@@ -1135,7 +1218,7 @@ export default function App() {
                 <EpisodeItem
                   key={d.ep.episodeId}
                   ep={d.ep}
-                  sup={superIds.has(d.ep.feedId)}
+                  stars={starLevel(d.ep.feedId)}
                   isCurrent={current?.episodeId === d.ep.episodeId}
                   liveTime={current?.episodeId === d.ep.episodeId ? curTime : undefined}
                   chartRank={rankForEpisode(d.ep.title)}
@@ -1188,7 +1271,7 @@ export default function App() {
                   <EpisodeItem
                     key={ep.episodeId}
                     ep={ep}
-                    sup={superIds.has(ep.feedId)}
+                    stars={starLevel(ep.feedId)}
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     chartRank={rankForEpisode(ep.title)}
@@ -1346,15 +1429,33 @@ function PodcastCard({
   podcast,
   level,
   chartRank,
-  onStar,
+  onStars,
+  onDelete,
   onOpen,
 }: {
   podcast: Podcast
-  level: number // 0 = ikke fulgt, 1 = favorit (★), 2 = superfavorit (★★)
+  level: number // 0 = ikke fulgt, ellers 1-3 stjerner
   chartRank?: number // placering på Apples top-50 i Danmark
-  onStar: () => void
+  onStars: (n: number) => void
+  onDelete: () => void
   onOpen: () => void
 }) {
+  // Slet kræver to tryk: første tryk gør knappen rød ("Slet?"), andet sletter. Svarer man ikke
+  // inden 4 sek., falder den tilbage. Ikke window.confirm — den er ikke til at regne med i
+  // Android-app'ens WebView.
+  const [confirmDel, setConfirmDel] = useState(false)
+  const delTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(delTimer.current), [])
+  const del = () => {
+    window.clearTimeout(delTimer.current)
+    if (confirmDel) {
+      setConfirmDel(false)
+      onDelete()
+      return
+    }
+    setConfirmDel(true)
+    delTimer.current = window.setTimeout(() => setConfirmDel(false), 4000)
+  }
   return (
     <div className="card">
       <button className="card-main" onClick={onOpen}>
@@ -1377,27 +1478,50 @@ function PodcastCard({
           </span>
         </div>
       </button>
-      <button
-        className={`star ${level > 0 ? 'on' : ''} ${level === 2 ? 'super' : ''}`}
-        onClick={onStar}
-        title={
-          level === 0
-            ? 'Tilføj favorit'
-            : level === 1
-              ? 'Gør til superfavorit — nye afsnit fremhæves i køen'
-              : 'Superfavorit — tryk for at fjerne podcasten helt'
-        }
-        aria-label={level === 0 ? 'Tilføj favorit' : level === 1 ? 'Gør til superfavorit' : 'Fjern favorit'}
-      >
-        {level === 0 ? '☆' : level === 1 ? '★' : '★★'}
-      </button>
+      {/* Tre stjerner: tryk på den stjerne man vil op eller ned til. Et tryk følger podcasten,
+          hvis man ikke gør det i forvejen — og fjerner den aldrig; det gør Slet nedenunder. */}
+      <div className={`rate lvl-${level}`}>
+        <div className="rate-stars" role="group" aria-label="Stjerner">
+          {[1, 2, 3].map((n) => (
+            <button
+              key={n}
+              className={`rate-star ${n <= level ? 'on' : ''}`}
+              onClick={() => onStars(n)}
+              aria-pressed={n === level}
+              aria-label={n === 1 ? '1 stjerne' : `${n} stjerner`}
+              title={
+                level === 0
+                  ? `Følg med ${n === 1 ? '1 stjerne' : `${n} stjerner`}`
+                  : n === level
+                    ? `${n === 1 ? '1 stjerne' : `${n} stjerner`} nu`
+                    : `Skift til ${n === 1 ? '1 stjerne' : `${n} stjerner`}`
+              }
+            >
+              {n <= level ? '★' : '☆'}
+            </button>
+          ))}
+        </div>
+        {level > 0 ? (
+          <button
+            className={`rate-act del ${confirmDel ? 'confirm' : ''}`}
+            onClick={del}
+            title={confirmDel ? 'Tryk igen for at slette podcasten fra dine favoritter' : 'Slet podcasten fra dine favoritter'}
+          >
+            {confirmDel ? 'Slet?' : 'Slet'}
+          </button>
+        ) : (
+          <button className="rate-act follow" onClick={() => onStars(1)} title="Følg med 1 stjerne">
+            + Følg
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 
 function EpisodeItem({
   ep,
-  sup,
+  stars,
   isCurrent,
   liveTime,
   chartRank,
@@ -1412,7 +1536,7 @@ function EpisodeItem({
   onRemoveDownload,
 }: {
   ep: EpisodeRow
-  sup: boolean // afsnittet kommer fra en superfavorit (★★)
+  stars: number // podcastens stjerner (0 = ikke fulgt, ellers 1-3)
   isCurrent: boolean
   liveTime?: number // sekunder for det afsnit der spiller lige nu (så bjælken bevæger sig)
   chartRank?: number // placering på Apples danske trending-afsnit-liste
@@ -1447,11 +1571,11 @@ function EpisodeItem({
   // brugeren trykke forgæves
   const unreachable = offline && playable && !downloaded
   const busy = dl === 'busy' || dl === 'queued'
-  // ★★-markeringen gælder kun uhørte afsnit: pointen er "her er der kommet noget nyt du ikke
-  // vil misse", og et hørt afsnit er allerede fanget.
-  const superNew = sup && !heard
+  // Markeringen (★★/★★★) gælder kun uhørte afsnit: pointen er "her er der kommet noget nyt du
+  // ikke vil misse", og et hørt afsnit er allerede fanget. Én stjerne er en almindelig favorit.
+  const superNew = stars >= 2 && !heard
   return (
-    <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''} ${started ? 'continuing' : ''} ${superNew ? 'super' : ''} ${unreachable ? 'unreachable' : ''}`}>
+    <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''} ${started ? 'continuing' : ''} ${superNew ? `super s${stars}` : ''} ${unreachable ? 'unreachable' : ''}`}>
       <button
         className={`ep-thumb ${playable ? '' : 'link'}`}
         onClick={activate}
@@ -1463,7 +1587,7 @@ function EpisodeItem({
       <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
         <span className="ep-meta">
-          {superNew && <em className="sup-chip" title="Nyt afsnit fra en superfavorit">★★</em>}
+          {superNew && <em className="sup-chip" title={`Nyt afsnit fra en podcast med ${stars} stjerner`}>{'★'.repeat(stars)}</em>}
           {heard && <em className="heard-chip" title="Du har hørt dette afsnit — tryk ✓ for at markere det uhørt igen">✓ Hørt</em>}
           {started && <em className="cont-chip" title="Du er i gang med dette afsnit">▶ Fortsætter</em>}
           {chartRank && (

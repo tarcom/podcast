@@ -37,5 +37,5 @@ export type Favorite = {
   language?: string
   feedUrl?: string
   addedVia?: string
-  priority?: number // 1 = superfavorit (★★): nye afsnit markeres ekstra i køen
+  priority?: number // stjerner minus én: 0 = ★, 1 = ★★, 2 = ★★★ (★★/★★★ markeres i køen)
 }

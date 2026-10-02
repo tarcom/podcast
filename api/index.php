@@ -318,16 +318,16 @@ try {
             podcast_refresh_feed($config, $pdo, $deviceId, $feedId);
             json_response(['status' => true]);
 
-        // Superfavorit til/fra (stjernens 3. trin). priority 1 = nye afsnit markeres ekstra
-        // i koen; kolonnen rores IKKE af favorites.add, sa en genindlaesning af feedet eller et
-        // gensyn med podcasten i Udforsk ikke nulstiller markeringen.
+        // Stjerner: priority 0-2 = 1-3 stjerner (de gamle superfavoritter har 1 = to stjerner).
+        // 2-3 stjerner markeres ekstra i koen. Kolonnen rores IKKE af favorites.add, sa en
+        // genindlaesning af feedet eller et gensyn med podcasten i Udforsk ikke nulstiller den.
         case 'favorites.setPriority':
             if ($method !== 'POST') {
                 json_response(['status' => false, 'error' => 'Method not allowed'], 405);
             }
             $deviceId = required_string($body, 'deviceId');
             $feedId = required_int($body, 'feedId');
-            $priority = ((int) ($body['priority'] ?? 0)) > 0 ? 1 : 0;
+            $priority = max(0, min(2, (int) ($body['priority'] ?? 0)));
             $pdo = db($config);
             $stmt = $pdo->prepare('UPDATE podcast_favorites SET priority = :prio
                                    WHERE device_id = :dev AND feed_id = :feed');
