@@ -24,7 +24,7 @@ DEV = "allan-main"
 UA = "AllDKPodcasts/1.0"  # simply/one.com's WAF afviser urllib's egen user-agent
 QBT = "http://localhost:8080/api/v2/torrents/info?filter=completed"  # WebUI\LocalHostAuth=false
 CONFIG = Path(__file__).resolve().parent.parent / "api" / "config.php"
-MAX_AGE = 540          # 9 min: alt der ikke blev taget sidst, tages nu
+MAX_AGE = 300          # 5 min (serverens minimum): 540 sprang feeds over, som appen havde hentet 8 min. før
 PER_CALL = 8           # = PODCAST_MAX_REFRESH_PER_CALL i podcast_store.php
 TORRENT_DAYS = 7
 

@@ -30,7 +30,7 @@ er lette at snuble over.
 - **Refresh ved åbning + HTPC-cron hvert 10. min.** Frontenden henter cachen først og kalder
   `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor), også når appen kommer frem
   igen efter mindst 2 min. i baggrunden. Siden 2026-10-02 opdaterer `scraper/tick.py` på HTPC
-  desuden **alle** feeds hvert 10. min. (`episodes.refresh&maxAge=540`), så cachen som regel
+  desuden **alle** feeds hvert 10. min. (`episodes.refresh&maxAge=300`), så cachen som regel
   allerede er frisk, når appen åbnes. Appen skal stadig virke uden cron'en — den er en
   genvej, ikke en forudsætning. Se afsnittet om torrents.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
@@ -697,7 +697,7 @@ var et bevidst valg, fordi qBittorrent ikke gemmer hvilken regel en torrent kom 
   at kløve UTF-8) alle seks steder der skrives afsnit. Frontenden slugte fejlen, fordi
   feed-tjekket er best-effort — **cron'ens log (`scraper/tick.log`) er nu stedet at se den slags.**
 - **`episodes.refresh` tager `maxAge`** (sek., klemt til 300-86400). Frontenden sender den ikke
-  og får 30 min. som før; cron'en sender 540 og kalder igen, til der er færre end 8 feeds tilbage.
+  og får 30 min. som før; cron'en sender 300 og kalder igen, til der er færre end 8 feeds tilbage.
 - **Afprøvet** med headless Chrome via test-proxyen (se stjerneafsnittet): uden kode ingen
   torrents og 🔒, forkert kode afvist, rigtig kode viser 28 torrents, ✓ Set frem og tilbage,
   Podcast + TV skjuler dem, tokenet huskes efter genindlæsning, og et ugyldigt token glemmes.

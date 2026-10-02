@@ -381,7 +381,7 @@ try {
         // Den langsomme halvdel: hent forældede favoritters RSS (0,15-0,38 sek. pr. feed, op til 8).
         // Svarer med hvor meget der reelt kom ind, så frontenden kun genhenter køen når der ER nyt.
         // `maxAge` (sek., 300-86400) bruges af HTPC-cron'en hvert 10. min. til at tage ALLE feeds
-        // (540); frontenden sender den ikke og får standarden på 30 min.
+        // (300); frontenden sender den ikke og får standarden på 30 min.
         case 'episodes.refresh':
             $deviceId = $deviceFromGet();
             $maxAge = isset($_GET['maxAge'])
