@@ -17,4 +17,10 @@ return [
         'password' => 'REPLACE_ME',
         'charset' => 'utf8mb4',
     ],
+    // Torrents fra HTPC (api/torrents.php). Udelades sektionen, svarer torrent-kaldene 503.
+    'torrent' => [
+        'pin_hash' => 'REPLACE_ME',   // php -r "echo password_hash('1234', PASSWORD_DEFAULT);"
+        'secret' => 'REPLACE_ME',     // bin2hex(random_bytes(32)) — skift den for at logge alle enheder ud
+        'ingest_key' => 'REPLACE_ME', // bin2hex(random_bytes(32)) — læses af scraper/tick.py
+    ],
 ];

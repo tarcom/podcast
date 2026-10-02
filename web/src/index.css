@@ -166,7 +166,7 @@ button:disabled { opacity: 0.6; cursor: default; }
 .ep-thumb.link .ep-badge { background: rgba(208,95,45,0.9); }
 .ep-thumb.disabled { cursor: default; }
 .ep-text { flex: 1; min-width: 0; background: none; border: none; text-align: left; padding: 0; font: inherit; cursor: pointer; }
-.ep-text strong { display: block; font-size: 14px; color: var(--ink); }
+.ep-text strong { display: block; font-size: 14px; color: var(--ink); overflow-wrap: anywhere; }
 .ep-text span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
 .ep-meta { display: block; }
 
@@ -181,6 +181,10 @@ button:disabled { opacity: 0.6; cursor: default; }
 .src-dr { background: #e0ecfb; color: #1a5fb4; }
 /* DR TV — fuld farve, så et TV-program aldrig forveksles med et afsnit man kan afspille */
 .src-dr-tv { background: #1a5fb4; color: #fff; }
+/* Torrent — hverken podcast eller TV: egen farve, og intet ▶/↗ på billedet (der er intet at åbne) */
+.src-torrent { background: #5b3a8c; color: #fff; }
+.ep-thumb .ep-noimg.torrent { display: flex; align-items: center; justify-content: center; font-size: 24px;
+  background: linear-gradient(135deg, #7b5aa8, #4a2f73); }
 
 /* link-out pop-up (Podimo/DR: kan ikke afspilles i appen) */
 .linkout { margin: 4px 0 14px; padding: 14px; border-radius: 14px; background: #fbf4e9; border: 1px solid var(--line); }
@@ -226,10 +230,21 @@ button:disabled { opacity: 0.6; cursor: default; }
   border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 14px; cursor: pointer; }
 .qchip.stars { letter-spacing: -1px; }
 .qchip.stars.on { background: var(--gold); border-color: var(--gold); color: #fff; }
-/* samme blå som TV-mærkatet på kortene og DR TV-kilden på rækkerne */
-.qchip.tv { font-size: 13px; font-weight: 700; }
-.qchip.tv.on { background: #1a5fb4; border-color: #1a5fb4; color: #fff; }
+.qchip.cat-podcast, .qchip.cat-tv, .qchip.cat-torrent { font-size: 13px; font-weight: 700; }
+.qchip.cat-podcast.on { background: var(--moss); border-color: var(--moss); color: #fff; }
+.qchip.cat-tv.on { background: #1a5fb4; border-color: #1a5fb4; color: #fff; }
+.qchip.cat-torrent.on { background: #5b3a8c; border-color: #5b3a8c; color: #fff; }
+/* skel mellem stjerne- og kategorigruppen; på smal skærm brydes rækken typisk her */
+.qsep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 2px; }
 .qchip.clear { border-style: dashed; font-size: 13px; }
+/* PIN-koden til torrents — vises under mærkaterne, når 🧲 Torrent trykkes uden kode */
+.pinbox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -4px 0 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: #f6f1fb; }
+.pinbox label { font-size: 13px; font-weight: 600; color: var(--ink); flex-basis: 100%; }
+.pinbox input { width: 110px; font: inherit; font-size: 18px; letter-spacing: 4px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 10px; }
+.pinbox .error { flex-basis: 100%; margin: 0; }
+.pinbox button { padding: 9px 14px; border-radius: 10px; }
 
 /* feed-tjek: cachen står allerede på skærmen, det her viser kun at vi kigger efter nyt */
 .feedcheck { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 10px 0 2px; }

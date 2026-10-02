@@ -218,7 +218,7 @@ function rss_refresh_feed(PDO $pdo, int $feedId, string $feedUrl, bool $pruneTea
             'feed' => $feedId,
             'ep' => $epId,
             'title' => mb_substr((string) $e['title'], 0, 512),
-            'descr' => (string) $e['description'],
+            'descr' => fit_text((string) $e['description']),
             'pub' => (int) $e['published_at'],
             'audio' => $e['audio_url'],
             'link' => $e['link_url'],

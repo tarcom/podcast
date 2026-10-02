@@ -314,7 +314,7 @@ function viaplay_refresh_feed(PDO $pdo, int $feedId, string $seriesUrl, int $max
             $inserted++;
         }
         $upsert->execute([
-            'feed' => $feedId, 'ep' => $r['ep'], 'title' => $r['title'], 'descr' => $r['descr'],
+            'feed' => $feedId, 'ep' => $r['ep'], 'title' => $r['title'], 'descr' => fit_text($r['descr']),
             'pub' => $r['pub'], 'link' => $r['link'], 'image' => $r['image'], 'dur' => $r['dur'],
         ]);
     }

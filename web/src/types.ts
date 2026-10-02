@@ -27,6 +27,8 @@ export type EpisodeRow = {
   playedAt?: string | null // non-null => heard (greyed)
   positionSec: number
   updatedAt?: string | null // hvornår state sidst blev rørt => "senest lyttet" i Fortsætter
+  kind?: 'torrent' // hentet af qBittorrent på HTPC (listTorrents) — hverken podcast eller TV
+  sizeBytes?: number // kun torrents
 }
 
 export type Favorite = {

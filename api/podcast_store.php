@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-// Episode caching + queries. Keeps the "lazy refresh on open" model: no cron needed
-// (the host has none guaranteed) — opening the app refreshes any favorite feed that has gone
-// stale, so "what's new" stays current without a background job. Single-user, few favorites,
-// so refreshing inline on load is cheap.
+// Episode caching + queries. "Lazy refresh on open": opening the app refreshes any favorite
+// feed that has gone stale. Since 2026-10-02 HTPC's cron (scraper/tick.py) ALSO refreshes every
+// feed every 10 min, so the cache is usually fresh before the app opens — but the app must keep
+// working without it, so the on-open refresh stays.
 
 const PODCAST_STALE_SECONDS = 1800;   // refresh a favorite's episodes if older than 30 min
 const PODCAST_MAX_REFRESH_PER_CALL = 8; // bound latency: refresh at most N stale feeds per request
@@ -132,7 +132,7 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
             'feed'  => $feedId,
             'ep'    => (int) $ep['id'],
             'title' => mb_substr((string) ($ep['title'] ?? 'Ukendt episode'), 0, 512),
-            'descr' => (string) ($ep['description'] ?? ''),
+            'descr' => fit_text((string) ($ep['description'] ?? '')),
             'pub'   => (int) ($ep['datePublished'] ?? 0),
             'audio' => $audio !== '' ? $audio : null,
             'link'  => trim((string) ($ep['link'] ?? '')) ?: null,
@@ -160,7 +160,7 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
  *
  * @return array{feeds:int,inserted:int} feeds = antal opdaterede feeds, inserted = nye afsnit.
  */
-function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $deviceId): array
+function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $deviceId, int $staleSeconds = PODCAST_STALE_SECONDS): array
 {
     $stmt = $pdo->prepare(
         'SELECT feed_id FROM podcast_favorites
@@ -172,7 +172,7 @@ function podcast_refresh_stale_favorites(array $config, PDO $pdo, string $device
     );
     // note: LIMIT is inlined (int-cast) because MySQL prepared statements can't bind LIMIT params.
     $stmt->bindValue('dev', $deviceId);
-    $stmt->bindValue('stale', PODCAST_STALE_SECONDS, PDO::PARAM_INT);
+    $stmt->bindValue('stale', $staleSeconds, PDO::PARAM_INT);
     $stmt->execute();
     $feedIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
 

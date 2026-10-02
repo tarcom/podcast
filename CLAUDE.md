@@ -27,9 +27,12 @@ er lette at snuble over.
   kopi blev rettet ved flytningen, den lokale ikke, så `deploy.sh api` tog appen ned 2026-10-02
   (alle kald svarede 500) i nogle minutter. Den lokale er rettet nu. Ret altid begge, hvis noget
   skifter.
-- **Ingen cron.** Refresh sker "ved åbning" — men **ikke længere inline i kø-svaret**: frontenden
-  henter cachen først og kalder `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor).
-  Bevidst uden cron — one.com/simply-cron er ikke en forudsætning.
+- **Refresh ved åbning + HTPC-cron hvert 10. min.** Frontenden henter cachen først og kalder
+  `episodes.refresh` bagefter (se afsnittet om kø-load nedenfor), også når appen kommer frem
+  igen efter mindst 2 min. i baggrunden. Siden 2026-10-02 opdaterer `scraper/tick.py` på HTPC
+  desuden **alle** feeds hvert 10. min. (`episodes.refresh&maxAge=540`), så cachen som regel
+  allerede er frisk, når appen åbnes. Appen skal stadig virke uden cron'en — den er en
+  genvej, ikke en forudsætning. Se afsnittet om torrents.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
   path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v15`**).
   Lyd-cachen **`nordpod-audio-v1`** er en anden cache og skal blive stående — se afsnittet om
@@ -654,6 +657,50 @@ Den låser URL-normaliseringen, at feed-id'et ikke kolliderer med DR TV's, at s�
 filtreres fra, at afsnittene er link-out uden `audio_url`, at kommende afsnit ikke slipper med,
 at "Lignende serier"-blokkens produkter ikke slipper med, og at kørsel nummer to ikke laver nye
 id'er.
+
+## Torrents fra HTPC + feeds hvert 10. min. (2026-10-02)
+Alt hvad qBittorrent på HTPC har gjort færdigt, vises i køen som kategorien **🧲 Torrent**
+(ikke ⬇ — det er offline-hentning). Der skelnes ikke mellem RSS-filtrene og hånd-hentede; det
+var et bevidst valg, fordi qBittorrent ikke gemmer hvilken regel en torrent kom fra.
+
+- **Bag PIN-kode (5090), fordi resten af API'et er åbent** — device-id'et `allan-main` står i
+  det offentlige JavaScript, så alt i køen kan læses af alle der kender adressen. Torrents
+  ligger derfor i **deres egen tabel `podcast_torrents`** og kommer **kun** med fra
+  `torrents.list` med headeren `X-Torrent-Token`. De kan ikke slippe med i `episodes.newest`
+  eller `episodes.feed` (verificeret: 0 torrent-navne i den åbne kø). Appen fletter dem ind i
+  køen selv (`fullQueue` i App.tsx), med syntetisk `feedId` -1 (`TORRENT_FEED_ID` begge steder).
+- **Tokenet** = HMAC over `config.php`'s `torrent.secret`; enheden får det fra `torrent.unlock`
+  og gemmer det i `localStorage['podcast_torrent_token']`. Koden tastes **én gang pr. enhed**
+  (browser og Android-app'en hver for sig) ved at trykke på **🧲 Torrent 🔒**. Afviser serveren
+  tokenet (401), glemmer appen det og viser 🔒 igen. **Ny PIN:** ny `pin_hash`
+  (`password_hash`). **Log alle enheder ud:** ny `secret`. Begge i `api/config.php` på HTPC,
+  derefter `./deploy.sh api`.
+- **5 forkerte koder = 1 minuts pause for ALLE** (tabellen `podcast_pin_lock`, én fælles
+  række) + 1 sek. ventetid pr. forkert forsøg. En firecifret kode kan ellers prøves igennem.
+- **Aflevering:** `scraper/tick.py` (cron `*/10`, via `run_tick.sh`, log i `scraper/tick.log`)
+  læser `http://localhost:8080/api/v2/torrents/info?filter=completed` — qBittorrent har
+  `WebUI\LocalHostAuth=false`, så det kræver ingen login — og sender alt færdigt fra de sidste
+  7 dage til `torrent.ingest`. Idempotent (nøglen er infohash'en); nyt står i svarets `added`
+  og i loggen. `ingest_key` læses direkte ud af `api/config.php` med en regex, så nøglen kun
+  står ét sted. Kræver at qBittorrent kører (GNOME-autostart, se HTPC-afsnittet i det store kort).
+- **Visning:** navnet vises med mellemrum i stedet for punktummer (`torrentTitle()` i api.ts;
+  `DDP5.1`/`v1.16` bevares), størrelse + "på HTPC", ingen ▶/↗ og intet link. ✓ hedder "Set"
+  og gemmes i `podcast_episode_state` som et afsnit (`episode_id = rss_stable_id('torrent:'+hash)`).
+- **Filtre:** kategorierne **🎙 Podcast · 📺 TV · 🧲 Torrent** kan tændes sammen (Podcast + TV =
+  alt undtagen torrents) og kombineres med stjernerne. Torrents har ingen stjerner, så et
+  stjernefilter skjuler dem.
+- **Fundet af cron-'en: én for lang beskrivelse væltede hele `episodes.refresh`.** All-In's
+  show notes er op til 92 KB; `podcast_episodes.description` er TEXT (64 KB), så rækken gav
+  "Data too long for column" og kaldet 500. Feedet var allerede stemplet som hentet, så det
+  fejlede stille hver gang, og **hele septembers All-In manglede** (38 afsnit kom ind ved
+  rettelsen). Nu skæres alle beskrivelser med `fit_text()` (bootstrap.php, 65.000 bytes uden
+  at kløve UTF-8) alle seks steder der skrives afsnit. Frontenden slugte fejlen, fordi
+  feed-tjekket er best-effort — **cron'ens log (`scraper/tick.log`) er nu stedet at se den slags.**
+- **`episodes.refresh` tager `maxAge`** (sek., klemt til 300-86400). Frontenden sender den ikke
+  og får 30 min. som før; cron'en sender 540 og kalder igen, til der er færre end 8 feeds tilbage.
+- **Afprøvet** med headless Chrome via test-proxyen (se stjerneafsnittet): uden kode ingen
+  torrents og 🔒, forkert kode afvist, rigtig kode viser 28 torrents, ✓ Set frem og tilbage,
+  Podcast + TV skjuler dem, tokenet huskes efter genindlæsning, og et ugyldigt token glemmes.
 
 ## Stjerner 1-3 og 📺 TV-filter i køen (2026-10-02)
 Afløser stjernerundturen fra afsnittet om superfavoritter nedenfor.

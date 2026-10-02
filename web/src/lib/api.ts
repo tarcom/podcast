@@ -147,6 +147,61 @@ export async function setFavoritePriority(deviceId: string, feedId: number, prio
   await apiPost({ deviceId, feedId, priority }, { action: 'favorites.setPriority' })
 }
 
+// --- Torrents fra HTPC (bag PIN-kode; se api/torrents.php) ---
+// Samme tal som TORRENT_FEED_ID i api/torrents.php. Torrents er ikke et rigtigt feed: de ligger
+// i deres egen tabel, kommer kun med et gyldigt token, og flettes ind i køen her i appen.
+export const TORRENT_FEED_ID = -1
+
+export class TorrentLocked extends Error {}
+
+// "Nybyggerne.S11E01.DANiSH.1080p.WEB.H264-EGEN" → "Nybyggerne S11E01 DANiSH 1080p WEB H264-EGEN".
+// Et punktum bliver kun stående i korte tal som DDP5.1 og v1.16 — ikke i "2026.1080p".
+// Serveren gemmer det rå navn.
+export function torrentTitle(name: string): string {
+  return name
+    .replace(/\.(mkv|mp4|avi)$/i, '')
+    .replace(/[._]/g, (m, i: number, str: string) =>
+      m === '.' && /\d/.test(str[i - 1] || '') && /^\d{1,3}(?!\d)/.test(str.slice(i + 1)) ? '.' : ' ',
+    )
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Bytter PIN-koden til et token, der gemmes på enheden. Kaster med serverens egen besked
+// ("Forkert kode", "For mange forkerte forsøg …").
+export async function unlockTorrents(pin: string): Promise<string> {
+  try {
+    const { data } = await apiPost({ pin }, { action: 'torrent.unlock' })
+    return s(data.token)
+  } catch (e) {
+    const msg = axios.isAxiosError(e) ? s(e.response?.data?.error) : ''
+    throw new Error(msg || 'Kunne ikke nå serveren')
+  }
+}
+
+// De 50 nyeste færdige torrents med hørt/set-tilstand. 401 (token skiftet) → TorrentLocked.
+export async function listTorrents(deviceId: string, token: string): Promise<EpisodeRow[]> {
+  try {
+    const { data } = await limited(() =>
+      client.get('', { params: { action: 'torrents.list', deviceId }, headers: { 'X-Torrent-Token': token } }),
+    )
+    return (data.items || []).map((r: RawRecord) => ({
+      feedId: TORRENT_FEED_ID,
+      episodeId: n(r.episode_id),
+      title: torrentTitle(s(r.name)),
+      publishedAt: n(r.completed_at),
+      durationSec: 0,
+      playedAt: (r.played_at as string | null) ?? null,
+      positionSec: 0,
+      kind: 'torrent' as const,
+      sizeBytes: n(r.size_bytes),
+    }))
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.status === 401) throw new TorrentLocked()
+    throw e
+  }
+}
+
 // --- Episodes ---
 // Køen fra cachen. Rører ikke nettet på serveren → svarer på ~80 ms.
 // NB: hørte afsnit kommer med i køen (de beholder deres plads i listen), men UDEN

@@ -11,6 +11,7 @@ require __DIR__ . '/rssfeed.php';
 require __DIR__ . '/drtv.php';
 require __DIR__ . '/viaplay.php';
 require __DIR__ . '/drpodcast.php';
+require __DIR__ . '/torrents.php';
 
 $action = $_GET['action'] ?? 'health';
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
@@ -83,6 +84,7 @@ try {
                     // kolonnen findes allerede — fint
                 }
             }
+            torrent_tables($pdo);
             json_response(['status' => true, 'message' => 'migrated', 'columnsAdded' => $added]);
 
         // Flet alle enheders data ind i ét fast single-user-id (indtil login).
@@ -169,7 +171,7 @@ try {
                     'feed'  => $feedId,
                     'ep'    => rss_stable_id((string) $e['productionNumber']),
                     'title' => $title,
-                    'descr' => (string) ($e['description'] ?? ''),
+                    'descr' => fit_text((string) ($e['description'] ?? '')),
                     'pub'   => $pub,
                     'link'  => trim((string) ($e['url'] ?? '')) ?: null,
                     'image' => trim((string) ($e['image'] ?? '')) ?: null,
@@ -378,10 +380,15 @@ try {
 
         // Den langsomme halvdel: hent forældede favoritters RSS (0,15-0,38 sek. pr. feed, op til 8).
         // Svarer med hvor meget der reelt kom ind, så frontenden kun genhenter køen når der ER nyt.
+        // `maxAge` (sek., 300-86400) bruges af HTPC-cron'en hvert 10. min. til at tage ALLE feeds
+        // (540); frontenden sender den ikke og får standarden på 30 min.
         case 'episodes.refresh':
             $deviceId = $deviceFromGet();
+            $maxAge = isset($_GET['maxAge'])
+                ? max(300, min(86400, (int) $_GET['maxAge']))
+                : PODCAST_STALE_SECONDS;
             $pdo = db($config);
-            $res = podcast_refresh_stale_favorites($config, $pdo, $deviceId);
+            $res = podcast_refresh_stale_favorites($config, $pdo, $deviceId, $maxAge);
             json_response([
                 'status'   => true,
                 'feeds'    => $res['feeds'],
@@ -505,7 +512,7 @@ try {
                     'feed'  => $feedId,
                     'ep'    => (int) crc32((string) $e['uuid']),
                     'title' => mb_substr((string) ($e['name'] ?? 'Episode'), 0, 512),
-                    'descr' => (string) ($e['description'] ?? ''),
+                    'descr' => fit_text((string) ($e['description'] ?? '')),
                     'pub'   => (int) ($e['datePublished'] ?? 0),
                     'link'  => (string) ($e['url'] ?? $url),
                     'image' => (string) ($e['image'] ?? ''),
@@ -514,6 +521,23 @@ try {
                 $n++;
             }
             json_response(['status' => true, 'feedId' => $feedId, 'episodes' => $n]);
+
+        // --- Torrents fra HTPC (bag PIN-kode, se torrents.php) ---
+        case 'torrent.unlock':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            torrent_tables(db($config));
+            torrent_unlock($config, $body);
+
+        case 'torrents.list':
+            torrent_list($config, $deviceFromGet());
+
+        case 'torrent.ingest':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            torrent_ingest($config, $body);
 
         default:
             json_response(['status' => false, 'error' => 'Unknown action'], 404);

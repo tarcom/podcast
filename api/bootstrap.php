@@ -5,7 +5,7 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+header('Access-Control-Allow-Headers: Content-Type, X-Torrent-Token');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -50,6 +50,15 @@ function required_string(array $source, string $key): string
     }
 
     return trim($value);
+}
+
+// TEXT-kolonner (podcast_episodes.description) rummer højst 65.535 bytes. All-In's show notes er
+// op til 92 KB, og én for lang beskrivelse fik hele episodes.refresh til at fejle med
+// "Data too long for column" (fundet 2026-10-02) — feedet blev stemplet som hentet, men dets
+// afsnit kom aldrig ind. Skær på byte-grænsen uden at kløve et UTF-8-tegn.
+function fit_text(string $s, int $maxBytes = 65000): string
+{
+    return strlen($s) <= $maxBytes ? $s : mb_strcut($s, 0, $maxBytes, "UTF-8");
 }
 
 function required_int(array $source, string $key): int

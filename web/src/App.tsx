@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   addFavorite,
   addPodimoShow,
@@ -8,12 +8,15 @@ import {
   getCharts,
   getPodcast,
   listFavorites,
+  listTorrents,
   newestEpisodes,
   refreshFeeds,
   removeFavorite,
   resolveUrl,
   search,
   setFavoritePriority,
+  TorrentLocked,
+  unlockTorrents,
 } from './lib/api'
 import { getDeviceId } from './lib/device'
 import { startKeepAlive, stopKeepAlive } from './lib/keepalive'
@@ -162,6 +165,33 @@ function tvVia(p: Podcast): 'drtv' | 'viaplay' {
   return VIAPLAY_URL.test((p.feedUrl || '') + '/') ? 'viaplay' : 'drtv'
 }
 
+// Kø-kategorierne. TV kendes på favoritten eller link-URL'en, torrents på `kind`; resten er podcasts.
+type Category = 'podcast' | 'tv' | 'torrent'
+const CATEGORIES: { key: Category; label: string; title: string }[] = [
+  { key: 'podcast', label: '🎙 Podcast', title: 'podcasts' },
+  { key: 'tv', label: '📺 TV', title: 'TV-programmer (DR TV og Viaplay)' },
+  { key: 'torrent', label: '🧲 Torrent', title: 'torrents hentet på HTPC' }, // ikke ⬇ — det er offline-hentning
+]
+
+// Tokenet fra torrent.unlock. Gemmes for sig (ikke som øjebliksbillede), så det overlever at
+// snapshots ryddes, og så det er ét sted at slette, hvis enheden skal "glemme" koden.
+const TORRENT_TOKEN_KEY = 'podcast_torrent_token'
+function readTorrentToken(): string {
+  try {
+    return localStorage.getItem(TORRENT_TOKEN_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+function saveTorrentToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(TORRENT_TOKEN_KEY, token)
+    else localStorage.removeItem(TORRENT_TOKEN_KEY)
+  } catch {
+    /* privat vindue o.l. — så skal koden tastes igen næste gang */
+  }
+}
+
 type DayGroup = { key: number; label: string; episodes: EpisodeRow[] }
 function groupByDay(eps: EpisodeRow[]): DayGroup[] {
   const groups: DayGroup[] = []
@@ -180,10 +210,23 @@ function groupByDay(eps: EpisodeRow[]): DayGroup[] {
 export default function App() {
   const deviceId = useMemo(getDeviceId, [])
   const [tab, setTab] = useState<Tab>('queue')
-  // Kø-filter: stjerner (★/★★/★★★, flere kan være tændt på én gang) og 📺 TV. Bevidst IKKE
-  // gemt mellem besøg — en kø der åbner halvtom uden synlig grund ligner en fejl.
+  // Kø-filter: stjerner (★/★★/★★★) og kategorier (🎙 Podcast/📺 TV/🧲 Torrent). Inden for hver
+  // gruppe kan flere være tændt på én gang. Bevidst IKKE gemt mellem besøg — en kø der åbner
+  // halvtom uden synlig grund ligner en fejl.
   const [starFilter, setStarFilter] = useState<number[]>([])
-  const [onlyTv, setOnlyTv] = useState(false)
+  const [catFilter, setCatFilter] = useState<Category[]>([])
+
+  // Torrents fra HTPC: kun på enheder hvor PIN-koden er tastet (tokenet gemmes her og sendes
+  // som header). Uden token hentes de slet ikke — se api/torrents.php.
+  const [torrentToken, setTorrentToken] = useState(readTorrentToken)
+  const torrentTokenRef = useRef(torrentToken)
+  const [torrents, setTorrents] = useState<EpisodeRow[]>(() =>
+    (torrentToken && readSnapshot<EpisodeRow[]>('torrents')) || [],
+  )
+  const [pinOpen, setPinOpen] = useState(false)
+  const [pin, setPin] = useState('')
+  const [pinErr, setPinErr] = useState('')
+  const [pinBusy, setPinBusy] = useState(false)
 
   // data — startværdien er sidste øjebliksbillede, så app'en har indhold med det samme og
   // også kan åbnes helt uden dækning. Netværkssvaret overskriver det når det kommer.
@@ -302,9 +345,74 @@ export default function App() {
     }
   }, [deviceId])
 
+  // Torrents hentes ved siden af køen og flettes ind i den (fullQueue). Bliver tokenet afvist
+  // (ny secret på serveren), glemmes det, og Torrent-mærkatet beder om koden igen.
+  const loadTorrents = useCallback(async () => {
+    const token = torrentTokenRef.current
+    if (!token) return
+    try {
+      const items = await listTorrents(deviceId, token)
+      setTorrents(items)
+      saveSnapshot('torrents', items)
+    } catch (e) {
+      if (e instanceof TorrentLocked) {
+        torrentTokenRef.current = ''
+        saveTorrentToken('')
+        setTorrentToken('')
+        setTorrents([])
+        saveSnapshot('torrents', [])
+      }
+      // ellers offline — øjebliksbilledet står allerede på skærmen
+    }
+  }, [deviceId])
+
+  const submitPin = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault()
+      setPinBusy(true)
+      setPinErr('')
+      try {
+        const token = await unlockTorrents(pin)
+        torrentTokenRef.current = token
+        saveTorrentToken(token)
+        setTorrentToken(token)
+        setPin('')
+        setPinOpen(false)
+        setCatFilter(['torrent']) // man trykkede på Torrent — vis dem
+        await loadTorrents()
+      } catch (err) {
+        setPinErr(err instanceof Error ? err.message : 'Kunne ikke låse op')
+      } finally {
+        setPinBusy(false)
+      }
+    },
+    [pin, loadTorrents],
+  )
+
+  // Hver gang appen kommer frem igen (en installeret PWA lukkes sjældent helt), tjekkes der i
+  // baggrunden: cachen hentes, feeds tjekkes og torrents hentes — højst hvert andet minut.
+  // HTPC-cron'en har som regel allerede hentet det nye ind, så det er cachen der giver svaret.
+  const lastLoad = useRef(0)
   useEffect(() => {
+    const onShow = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - lastLoad.current < 120_000) return
+      lastLoad.current = Date.now()
+      loadQueue().then(() => {
+        refreshFromFeeds()
+        loadTorrents()
+      })
+    }
+    document.addEventListener('visibilitychange', onShow)
+    return () => document.removeEventListener('visibilitychange', onShow)
+  }, [loadQueue, refreshFromFeeds, loadTorrents])
+
+  useEffect(() => {
+    lastLoad.current = Date.now()
     loadFavorites()
-    loadQueue().then(refreshFromFeeds)
+    loadQueue().then(() => {
+      refreshFromFeeds()
+      loadTorrents()
+    })
     // popularitet er pynt — fejler den, skal resten af app'en være upåvirket
     getCharts()
       .then((c) => {
@@ -312,7 +420,7 @@ export default function App() {
         setChartEpisodes(c.episodes)
       })
       .catch(() => {})
-  }, [loadFavorites, loadQueue, refreshFromFeeds])
+  }, [loadFavorites, loadQueue, refreshFromFeeds, loadTorrents])
 
   const refreshDownloads = useCallback(async () => {
     setDownloads(listDownloads())
@@ -519,7 +627,7 @@ export default function App() {
   const showEpisode = useCallback(
     (ep: EpisodeRow) => {
       setOpenEpisode(ep)
-      if (ep.description) return
+      if (ep.description || ep.kind === 'torrent') return
       setDescBusy(true)
       episodeDescription(ep.feedId, ep.episodeId)
         .then((desc) => {
@@ -651,6 +759,7 @@ export default function App() {
         list.map((e) => (e.episodeId === ep.episodeId ? { ...e, playedAt: heard ? new Date().toISOString() : null } : e))
       setQueue(patch)
       setDetailEpisodes(patch)
+      setTorrents(patch)
     },
     [persistState],
   )
@@ -851,24 +960,45 @@ export default function App() {
     [episodeRankByName],
   )
 
-  const unheardCount = queue.filter((e) => !e.playedAt).length
+  // Køen + torrents i én kronologi. Torrents er højst 50 og kommer fra deres eget kald.
+  const fullQueue = useMemo(
+    () => (torrents.length ? [...queue, ...torrents].sort((a, b) => b.publishedAt - a.publishedAt) : queue),
+    [queue, torrents],
+  )
+  const unheardCount = fullQueue.filter((e) => !e.playedAt).length
   // Filteret skærer kun i det der VISES; tælleren i toppen og badget på fanen bliver ved med at
   // gælde hele køen, så et tændt filter ikke ser ud som om afsnittene er forsvundet.
-  // Stjernerne virker som "en af disse" (★★ + ★★★ = alt med mindst to), TV som "og TV".
-  const filterOn = starFilter.length > 0 || onlyTv
+  // Inden for hver gruppe er det "en af disse" (★★ + ★★★ = alt med mindst to; Podcast + TV =
+  // alt undtagen torrents), og grupperne skal begge passe. Torrents har ingen stjerner, så et
+  // stjernefilter skjuler dem.
+  const filterOn = starFilter.length > 0 || catFilter.length > 0
+  const categoryOf = useCallback(
+    (e: EpisodeRow): Category =>
+      e.kind === 'torrent' ? 'torrent' : tvIds.has(e.feedId) || isTvEpisode(e) ? 'tv' : 'podcast',
+    [tvIds],
+  )
   const shownQueue = useMemo(
     () =>
       filterOn
-        ? queue.filter(
+        ? fullQueue.filter(
             (e) =>
-              (starFilter.length === 0 || starFilter.includes(Math.max(1, starLevel(e.feedId)))) &&
-              (!onlyTv || tvIds.has(e.feedId) || isTvEpisode(e)),
+              (starFilter.length === 0 ||
+                (e.kind !== 'torrent' && starFilter.includes(Math.max(1, starLevel(e.feedId))))) &&
+              (catFilter.length === 0 || catFilter.includes(categoryOf(e))),
           )
-        : queue,
-    [queue, filterOn, starFilter, onlyTv, starLevel, tvIds],
+        : fullQueue,
+    [fullQueue, filterOn, starFilter, catFilter, starLevel, categoryOf],
   )
   const toggleStarFilter = (n: number) =>
     setStarFilter((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n].sort()))
+  const toggleCat = (c: Category) => {
+    if (c === 'torrent' && !torrentToken) {
+      setPinOpen((v) => !v)
+      setPinErr('')
+      return
+    }
+    setCatFilter((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c]))
+  }
 
   // ---------- Udforsk-blokke ----------
   // Bygges her, fordi rækkefølgen skifter: uden søgning står hitlisten øverst (den er
@@ -1071,8 +1201,10 @@ export default function App() {
             </div>
           </div>
 
-          {/* Filter: ★/★★/★★★ og 📺 TV. Symbolerne ER mærkaterne — de samme som på rækkerne og
-              på kortene. Stjernerne kan tændes sammen (★★ + ★★★ = alt med mindst to). */}
+          {/* Filter: ★/★★/★★★ og 🎙 Podcast/📺 TV/🧲 Torrent. Symbolerne ER mærkaterne — de samme
+              som på rækkerne og kortene. Inden for hver gruppe kan flere tændes sammen (★★ + ★★★
+              = alt med mindst to; Podcast + TV = alt undtagen torrents). Torrent beder om
+              PIN-koden første gang på en enhed. */}
           {favorites.length > 0 && (
             <div className="qfilter" role="group" aria-label="Filtrér køen">
               {[1, 2, 3].map((n) => {
@@ -1091,20 +1223,51 @@ export default function App() {
                   </button>
                 )
               })}
-              <button
-                className={`qchip tv ${onlyTv ? 'on' : ''}`}
-                onClick={() => setOnlyTv((v) => !v)}
-                title={onlyTv ? 'Vis podcasts igen' : 'Vis kun TV-programmer (DR TV og Viaplay)'}
-                aria-pressed={onlyTv}
-              >
-                📺 TV
-              </button>
+              <span className="qsep" aria-hidden="true" />
+              {CATEGORIES.map((c) => {
+                const on = catFilter.includes(c.key)
+                const locked = c.key === 'torrent' && !torrentToken
+                return (
+                  <button
+                    key={c.key}
+                    className={`qchip cat-${c.key} ${on ? 'on' : ''}`}
+                    onClick={() => toggleCat(c.key)}
+                    title={locked ? 'Kræver koden — tryk for at låse op' : on ? `Skjul ${c.title} igen` : `Vis ${c.title}`}
+                    aria-pressed={on}
+                  >
+                    {c.label}
+                    {locked && ' 🔒'}
+                  </button>
+                )
+              })}
               {filterOn && (
-                <button className="qchip clear" onClick={() => { setStarFilter([]); setOnlyTv(false) }}>
+                <button className="qchip clear" onClick={() => { setStarFilter([]); setCatFilter([]) }}>
                   Vis alle
                 </button>
               )}
             </div>
+          )}
+          {pinOpen && (
+            <form className="pinbox" onSubmit={submitPin}>
+              <label htmlFor="torrent-pin">🔒 Torrents vises kun med koden</label>
+              <input
+                id="torrent-pin"
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={12}
+                value={pin}
+                onChange={(e) => setPin(e.target.value)}
+                autoFocus
+              />
+              <button className="primary" type="submit" disabled={pinBusy || !pin}>
+                {pinBusy ? '…' : 'Lås op'}
+              </button>
+              <button className="ghost" type="button" onClick={() => { setPinOpen(false); setPin(''); setPinErr('') }}>
+                Annullér
+              </button>
+              {pinErr && <p className="error">{pinErr}</p>}
+            </form>
           )}
 
           {canDownload && (
@@ -1319,13 +1482,15 @@ export default function App() {
             ) : (
               <div className="linkout">
                 <p className="linkout-msg">
-                  {playErrorId === openEpisode.episodeId
+                  {openEpisode.kind === 'torrent'
+                    ? <>🧲 Hentet med qBittorrent på HTPC{openEpisode.sizeBytes ? ` (${fmtBytes(openEpisode.sizeBytes)})` : ''} og ligger i <strong>/5TB_DISK/Torrents</strong>.</>
+                    : playErrorId === openEpisode.episodeId
                     ? <>⚠️ Afsnittet kunne ikke afspilles i appen (ligger måske kun hos <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>). Prøv at åbne det direkte:</>
                     : isTvEpisode(openEpisode)
                       ? <>📺 Dette er et <strong>TV-program</strong> og kan ikke afspilles i appen. Se det hos {sourceOf(openEpisode) || 'udbyderen'}:</>
                       : <>🔒 Dette afsnit kan ikke afspilles inde i appen — det ligger bag <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>. Åbn det direkte hos udbyderen:</>}
                 </p>
-                {openEpisode.linkUrl ? (
+                {openEpisode.kind === 'torrent' ? null : openEpisode.linkUrl ? (
                   <a className="linkout-btn" href={openEpisode.linkUrl} target="_blank" rel="noopener noreferrer">
                     ↗ Åbn hos {sourceOf(openEpisode) || 'udbyder'}
                   </a>
@@ -1333,11 +1498,13 @@ export default function App() {
                   <p className="muted">Der er desværre ikke noget offentligt link til dette afsnit.</p>
                 )}
                 <button className="ghost" onClick={() => { markHeard(openEpisode, !openEpisode.playedAt); setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() }) }}>
-                  {openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér som hørt'}
+                  {openEpisode.kind === 'torrent'
+                    ? openEpisode.playedAt ? '↺ Markér som ikke set' : '✓ Markér som set'
+                    : openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér som hørt'}
                 </button>
               </div>
             )}
-            {openEpisode.description ? (
+            {openEpisode.kind === 'torrent' ? null : openEpisode.description ? (
               <div className="show-desc" dangerouslySetInnerHTML={{ __html: openEpisode.description }} />
             ) : descBusy ? (
               <p className="muted">Henter beskrivelse…</p>
@@ -1553,7 +1720,9 @@ function EpisodeItem({
   const heard = !!ep.playedAt
   const art = ep.image || ep.podcastImage
   const playable = !!ep.audioUrl
-  const source = sourceOf(ep)
+  // Torrents har hverken lyd eller link — de ligger på HTPC's disk. Kilden er derfor fast.
+  const torrent = ep.kind === 'torrent'
+  const source = torrent ? 'Torrent' : sourceOf(ep)
   const tv = isTvEpisode(ep)
   // "DR TV" -> src-dr-tv (mellemrum i en className ville blive til to klasser)
   const srcClass = 'src-' + source.toLowerCase().replace(/\s+/g, '-')
@@ -1579,27 +1748,35 @@ function EpisodeItem({
       <button
         className={`ep-thumb ${playable ? '' : 'link'}`}
         onClick={activate}
-        title={playable ? 'Afspil' : `Kan ikke afspilles i appen — tryk for at åbne hos ${source || 'udbyder'}`}
+        title={
+          playable ? 'Afspil' : torrent ? 'Hentet på HTPC' : `Kan ikke afspilles i appen — tryk for at åbne hos ${source || 'udbyder'}`
+        }
       >
-        {art ? <img src={art} alt="" loading="lazy" /> : <span className="ep-noimg" />}
-        <span className="ep-badge">{playable ? '▶' : '↗'}</span>
+        {art ? <img src={art} alt="" loading="lazy" /> : <span className={`ep-noimg ${torrent ? 'torrent' : ''}`}>{torrent ? '🧲' : ''}</span>}
+        {!torrent && <span className="ep-badge">{playable ? '▶' : '↗'}</span>}
       </button>
       <button className="ep-text" onClick={onInfo} title="Læs mere">
         <strong>{ep.title}</strong>
         <span className="ep-meta">
           {superNew && <em className="sup-chip" title={`Nyt afsnit fra en podcast med ${stars} stjerner`}>{'★'.repeat(stars)}</em>}
-          {heard && <em className="heard-chip" title="Du har hørt dette afsnit — tryk ✓ for at markere det uhørt igen">✓ Hørt</em>}
+          {heard && (
+            <em className="heard-chip" title="Markeret — tryk ✓ for at fjerne markeringen igen">
+              {torrent ? '✓ Set' : '✓ Hørt'}
+            </em>
+          )}
           {started && <em className="cont-chip" title="Du er i gang med dette afsnit">▶ Fortsætter</em>}
           {chartRank && (
             <em className="hot" title={`Nr. ${chartRank} på Apples trending-afsnit i Danmark lige nu`}>
               🔥 #{chartRank} i DK
             </em>
           )}
-          {source && <em className={`src ${srcClass}`}>{tv ? '📺 ' : ''}{source}</em>}
+          {source && <em className={`src ${srcClass}`}>{tv ? '📺 ' : torrent ? '🧲 ' : ''}{source}</em>}
           {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
           {fmtDate(ep.publishedAt)}
           {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
-          {!playable && (tv ? ' · ses hos ' + source : ' · kun hos udbyder')}
+          {torrent
+            ? (ep.sizeBytes ? ' · ' + fmtBytes(ep.sizeBytes) : '') + ' · på HTPC'
+            : !playable && (tv ? ' · ses hos ' + source : ' · kun hos udbyder')}
         </span>
         {started && (
           <span className="ep-progress" title={`${fmtClock(pos)} af ${fmtClock(total)}`}>
@@ -1627,7 +1804,11 @@ function EpisodeItem({
           {dl === 'busy' ? <span className="spinner" aria-hidden="true" /> : dl === 'queued' ? '⋯' : dl === 'error' ? '↻' : '⬇'}
         </button>
       )}
-      <button className={`heard-toggle ${heard ? 'on' : ''}`} onClick={onToggleHeard} title={heard ? 'Markér som uhørt' : 'Markér som hørt'}>
+      <button
+        className={`heard-toggle ${heard ? 'on' : ''}`}
+        onClick={onToggleHeard}
+        title={torrent ? (heard ? 'Markér som ikke set' : 'Markér som set') : heard ? 'Markér som uhørt' : 'Markér som hørt'}
+      >
         ✓
       </button>
     </li>
