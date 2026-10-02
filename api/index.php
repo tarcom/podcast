@@ -533,6 +533,12 @@ try {
         case 'torrents.list':
             torrent_list($config, $deviceFromGet());
 
+        case 'torrent.setPriority':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            torrent_set_priority($config, $body);
+
         case 'torrent.ingest':
             if ($method !== 'POST') {
                 json_response(['status' => false, 'error' => 'Method not allowed'], 405);

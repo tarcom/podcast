@@ -9,7 +9,8 @@ declare(strict_types=1);
 // episodes.feed — og kun `torrents.list` med et gyldigt token læser dem.
 //
 //   torrent.unlock  POST {pin}                         -> {token}  (5 forkerte = 1 min pause for alle)
-//   torrents.list   GET  deviceId + X-Torrent-Token    -> de 50 nyeste, med hørt/set-tilstand
+//   torrents.list   GET  deviceId + X-Torrent-Token    -> de 50 nyeste, med hørt/set-tilstand + priority
+//   torrent.setPriority POST {deviceId, priority} + X-Torrent-Token  (stjerner: 0-2 = ★ til ★★★)
 //   torrent.ingest  POST {key, torrents:[...]}         <- HTPC-cron'en (scraper/tick.py)
 //
 // config.php: 'torrent' => ['pin_hash' => password_hash(PIN), 'secret' => …, 'ingest_key' => …].
@@ -51,6 +52,15 @@ function torrent_tables(PDO $pdo): void
             completed_at INT UNSIGNED NOT NULL,
             KEY idx_torrent_completed (completed_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+    // Torrents' stjerner pr. enhed (0-2 = ★ til ★★★, som podcast_favorites.priority). Ikke en række
+    // i podcast_favorites: så ville "Torrent" stå i det åbne favorites.list, blive forsøgt
+    // opdateret som et feed og kunne slettes — og den kan bevidst ikke fjernes.
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS podcast_torrent_prefs (
+            device_id VARCHAR(80) NOT NULL PRIMARY KEY,
+            priority TINYINT NOT NULL DEFAULT 0
+        ) ENGINE=InnoDB'
     );
     // Én række: fejlede PIN-forsøg tælles fælles, ikke pr. klient — en firecifret kode skal
     // ikke kunne prøves igennem fra mange adresser på én gang.
@@ -108,7 +118,31 @@ function torrent_list(array $config, string $deviceId): never
          LIMIT ' . (int) TORRENT_LIST_LIMIT
     );
     $stmt->execute(['dev' => $deviceId]);
-    json_response(['status' => true, 'feedId' => TORRENT_FEED_ID, 'items' => $stmt->fetchAll()]);
+    $items = $stmt->fetchAll();
+    $prio = $pdo->prepare('SELECT priority FROM podcast_torrent_prefs WHERE device_id = :dev');
+    $prio->execute(['dev' => $deviceId]);
+    json_response([
+        'status' => true,
+        'feedId' => TORRENT_FEED_ID,
+        'priority' => (int) ($prio->fetchColumn() ?: 0),
+        'items' => $items,
+    ]);
+}
+
+function torrent_set_priority(array $config, array $body): never
+{
+    $t = torrent_config($config);
+    if (!torrent_token_ok($t)) {
+        json_response(['status' => false, 'error' => 'Kræver koden'], 401);
+    }
+    $deviceId = required_string($body, 'deviceId');
+    $priority = max(0, min(2, (int) ($body['priority'] ?? 0)));
+    $pdo = db($config);
+    $pdo->prepare(
+        'INSERT INTO podcast_torrent_prefs (device_id, priority) VALUES (:dev, :prio)
+         ON DUPLICATE KEY UPDATE priority = VALUES(priority)'
+    )->execute(['dev' => $deviceId, 'prio' => $priority]);
+    json_response(['status' => true, 'priority' => $priority]);
 }
 
 function torrent_ingest(array $config, array $body): never

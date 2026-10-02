@@ -13,8 +13,10 @@ import {
   refreshFeeds,
   removeFavorite,
   resolveUrl,
+  saveTorrentStars,
   search,
   setFavoritePriority,
+  TORRENT_FEED_ID,
   TorrentLocked,
   unlockTorrents,
 } from './lib/api'
@@ -223,6 +225,9 @@ export default function App() {
   const [torrents, setTorrents] = useState<EpisodeRow[]>(() =>
     (torrentToken && readSnapshot<EpisodeRow[]>('torrents')) || [],
   )
+  // Torrent har stjerner som en podcast (1-3, gemt på serveren bag samme token), men er et fast
+  // kort i Favoritter uden Slet — den kan ikke fjernes, kun skjules med filteret i køen.
+  const [torrentStars, setTorrentStars] = useState(() => readSnapshot<number>('torrentStars') || 1)
   const [pinOpen, setPinOpen] = useState(false)
   const [pin, setPin] = useState('')
   const [pinErr, setPinErr] = useState('')
@@ -347,24 +352,45 @@ export default function App() {
 
   // Torrents hentes ved siden af køen og flettes ind i den (fullQueue). Bliver tokenet afvist
   // (ny secret på serveren), glemmes det, og Torrent-mærkatet beder om koden igen.
+  const forgetTorrents = useCallback(() => {
+    torrentTokenRef.current = ''
+    saveTorrentToken('')
+    setTorrentToken('')
+    setTorrents([])
+    saveSnapshot('torrents', [])
+  }, [])
+
   const loadTorrents = useCallback(async () => {
     const token = torrentTokenRef.current
     if (!token) return
     try {
-      const items = await listTorrents(deviceId, token)
+      const { items, stars } = await listTorrents(deviceId, token)
       setTorrents(items)
       saveSnapshot('torrents', items)
+      setTorrentStars(stars)
+      saveSnapshot('torrentStars', stars)
     } catch (e) {
-      if (e instanceof TorrentLocked) {
-        torrentTokenRef.current = ''
-        saveTorrentToken('')
-        setTorrentToken('')
-        setTorrents([])
-        saveSnapshot('torrents', [])
-      }
+      if (e instanceof TorrentLocked) forgetTorrents()
       // ellers offline — øjebliksbilledet står allerede på skærmen
     }
-  }, [deviceId])
+  }, [deviceId, forgetTorrents])
+
+  // Som setStars for en podcast: vises med det samme. Fejler kaldet, henter vi serverens tal igen.
+  const changeTorrentStars = useCallback(
+    async (stars: number) => {
+      const token = torrentTokenRef.current
+      if (!token || stars === torrentStars) return
+      setTorrentStars(stars)
+      try {
+        await saveTorrentStars(deviceId, token, stars)
+        saveSnapshot('torrentStars', stars)
+      } catch (e) {
+        if (e instanceof TorrentLocked) forgetTorrents()
+        else await loadTorrents()
+      }
+    },
+    [deviceId, torrentStars, forgetTorrents, loadTorrents],
+  )
 
   const submitPin = useCallback(
     async (e: FormEvent) => {
@@ -969,8 +995,12 @@ export default function App() {
   // Filteret skærer kun i det der VISES; tælleren i toppen og badget på fanen bliver ved med at
   // gælde hele køen, så et tændt filter ikke ser ud som om afsnittene er forsvundet.
   // Inden for hver gruppe er det "en af disse" (★★ + ★★★ = alt med mindst to; Podcast + TV =
-  // alt undtagen torrents), og grupperne skal begge passe. Torrents har ingen stjerner, så et
-  // stjernefilter skjuler dem.
+  // alt undtagen torrents), og grupperne skal begge passe. Torrents tæller med Torrent-kortets
+  // stjerner (de har ét fælles antal, ikke ét pr. torrent).
+  const starsOf = useCallback(
+    (e: EpisodeRow) => (e.kind === 'torrent' ? torrentStars : starLevel(e.feedId)),
+    [torrentStars, starLevel],
+  )
   const filterOn = starFilter.length > 0 || catFilter.length > 0
   const categoryOf = useCallback(
     (e: EpisodeRow): Category =>
@@ -982,12 +1012,11 @@ export default function App() {
       filterOn
         ? fullQueue.filter(
             (e) =>
-              (starFilter.length === 0 ||
-                (e.kind !== 'torrent' && starFilter.includes(Math.max(1, starLevel(e.feedId))))) &&
+              (starFilter.length === 0 || starFilter.includes(Math.max(1, starsOf(e)))) &&
               (catFilter.length === 0 || catFilter.includes(categoryOf(e))),
           )
         : fullQueue,
-    [fullQueue, filterOn, starFilter, catFilter, starLevel, categoryOf],
+    [fullQueue, filterOn, starFilter, catFilter, starsOf, categoryOf],
   )
   const toggleStarFilter = (n: number) =>
     setStarFilter((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n].sort()))
@@ -1175,6 +1204,23 @@ export default function App() {
         <section className="panel">
           {favorites.length === 0 && <p className="muted">Ingen favoritter endnu — find nogle under Udforsk og giv dem en, to eller tre stjerner.</p>}
           <div className="grid">
+            {/* Torrent: fast kort øverst (kun med koden). Stjerner som en podcast, men intet Slet —
+                den kan ikke fjernes. Et tryk viser torrents i køen. */}
+            {torrentToken && (
+              <PodcastCard
+                podcast={{ id: TORRENT_FEED_ID, title: 'Torrent', author: 'Alt hvad qBittorrent har hentet på HTPC' }}
+                icon="🧲"
+                fixed
+                level={torrentStars}
+                onStars={changeTorrentStars}
+                onDelete={() => {}}
+                onOpen={() => {
+                  setStarFilter([])
+                  setCatFilter(['torrent'])
+                  setTab('queue')
+                }}
+              />
+            )}
             {favorites.map((f) => (
               <PodcastCard
                 key={f.feedId}
@@ -1329,7 +1375,7 @@ export default function App() {
                   <EpisodeItem
                     key={ep.episodeId}
                     ep={ep}
-                    stars={starLevel(ep.feedId)}
+                    stars={starsOf(ep)}
                     isCurrent={current?.episodeId === ep.episodeId}
                     liveTime={current?.episodeId === ep.episodeId ? curTime : undefined}
                     chartRank={rankForEpisode(ep.title)}
@@ -1596,6 +1642,8 @@ function PodcastCard({
   podcast,
   level,
   chartRank,
+  icon,
+  fixed,
   onStars,
   onDelete,
   onOpen,
@@ -1603,6 +1651,8 @@ function PodcastCard({
   podcast: Podcast
   level: number // 0 = ikke fulgt, ellers 1-3 stjerner
   chartRank?: number // placering på Apples top-50 i Danmark
+  icon?: string // i stedet for et billede (Torrent-kortet)
+  fixed?: boolean // kan ikke fjernes: ingen Slet/Følg under stjernerne (Torrent-kortet)
   onStars: (n: number) => void
   onDelete: () => void
   onOpen: () => void
@@ -1626,7 +1676,11 @@ function PodcastCard({
   return (
     <div className="card">
       <button className="card-main" onClick={onOpen}>
-        {podcast.image ? <img src={podcast.image} alt="" loading="lazy" /> : <div className="noimg" />}
+        {podcast.image ? (
+          <img src={podcast.image} alt="" loading="lazy" />
+        ) : (
+          <div className={`noimg ${icon ? 'icon' : ''}`}>{icon}</div>
+        )}
         <div className="card-text">
           <strong>{podcast.title}</strong>
           <span>{podcast.author}</span>
@@ -1668,7 +1722,7 @@ function PodcastCard({
             </button>
           ))}
         </div>
-        {level > 0 ? (
+        {fixed ? null : level > 0 ? (
           <button
             className={`rate-act del ${confirmDel ? 'confirm' : ''}`}
             onClick={del}

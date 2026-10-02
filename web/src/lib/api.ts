@@ -179,13 +179,15 @@ export async function unlockTorrents(pin: string): Promise<string> {
   }
 }
 
-// De 50 nyeste færdige torrents med hørt/set-tilstand. 401 (token skiftet) → TorrentLocked.
-export async function listTorrents(deviceId: string, token: string): Promise<EpisodeRow[]> {
+// De 50 nyeste færdige torrents med hørt/set-tilstand, og hvor mange stjerner Torrent har
+// (1-3, gemt som priority 0-2 ligesom favoritterne). 401 (token skiftet) → TorrentLocked.
+export async function listTorrents(deviceId: string, token: string): Promise<{ items: EpisodeRow[]; stars: number }> {
   try {
     const { data } = await limited(() =>
       client.get('', { params: { action: 'torrents.list', deviceId }, headers: { 'X-Torrent-Token': token } }),
     )
-    return (data.items || []).map((r: RawRecord) => ({
+    const stars = 1 + Math.min(2, Math.max(0, n(data.priority)))
+    const items = (data.items || []).map((r: RawRecord) => ({
       feedId: TORRENT_FEED_ID,
       episodeId: n(r.episode_id),
       title: torrentTitle(s(r.name)),
@@ -196,6 +198,19 @@ export async function listTorrents(deviceId: string, token: string): Promise<Epi
       kind: 'torrent' as const,
       sizeBytes: n(r.size_bytes),
     }))
+    return { items, stars }
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.status === 401) throw new TorrentLocked()
+    throw e
+  }
+}
+
+// Torrents' stjerner (1-3). Bag samme token som listen, så heller ikke dét kan ses udefra.
+export async function saveTorrentStars(deviceId: string, token: string, stars: number): Promise<void> {
+  try {
+    await limited(() =>
+      client.post('', { deviceId, priority: stars - 1 }, { params: { action: 'torrent.setPriority' }, headers: { 'X-Torrent-Token': token } }),
+    )
   } catch (e) {
     if (axios.isAxiosError(e) && e.response?.status === 401) throw new TorrentLocked()
     throw e

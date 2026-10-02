@@ -686,9 +686,15 @@ var et bevidst valg, fordi qBittorrent ikke gemmer hvilken regel en torrent kom 
 - **Visning:** navnet vises med mellemrum i stedet for punktummer (`torrentTitle()` i api.ts;
   `DDP5.1`/`v1.16` bevares), størrelse + "på HTPC", ingen ▶/↗ og intet link. ✓ hedder "Set"
   og gemmes i `podcast_episode_state` som et afsnit (`episode_id = rss_stable_id('torrent:'+hash)`).
+- **Torrent har stjerner (1-3) men kan ikke fjernes.** Et fast kort øverst i Favoritter (kun med
+  koden) med stjerner og uden Slet/Følg; et tryk på kortet viser torrents i køen. Ét fælles
+  antal for alle torrents, gemt pr. enhed i **`podcast_torrent_prefs`** (priority 0-2) bag samme
+  token (`torrent.setPriority`, `torrents.list` svarer med `priority`). **Ikke** en række i
+  `podcast_favorites`: så ville den stå i det åbne `favorites.list`, blive forsøgt opdateret som
+  et feed og kunne slettes. ★★/★★★ markerer uhørte torrents i køen som for podcasts.
 - **Filtre:** kategorierne **🎙 Podcast · 📺 TV · 🧲 Torrent** kan tændes sammen (Podcast + TV =
-  alt undtagen torrents) og kombineres med stjernerne. Torrents har ingen stjerner, så et
-  stjernefilter skjuler dem.
+  alt undtagen torrents) og kombineres med stjernerne; torrents tæller med Torrent-kortets
+  stjerner (`starsOf()` i App.tsx).
 - **Fundet af cron-'en: én for lang beskrivelse væltede hele `episodes.refresh`.** All-In's
   show notes er op til 92 KB; `podcast_episodes.description` er TEXT (64 KB), så rækken gav
   "Data too long for column" og kaldet 500. Feedet var allerede stemplet som hentet, så det
