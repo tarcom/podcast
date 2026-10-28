@@ -6,3 +6,6 @@ scraper/.venv/
 scraper/scrape.log
 scraper/__pycache__/
 scraper/*.log
+scraper/drtv_hentet.json
+scraper/drtv_hentet.tmp
+scraper/.yt-dlp-opdateret

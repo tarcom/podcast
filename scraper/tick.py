@@ -7,9 +7,12 @@
 2. Send de torrents, qBittorrent har gjort færdige de sidste 7 dage, til torrent.ingest. Det
    er idempotent (nøglen er torrentens hash), så der sendes det samme hver gang — det der er
    nyt, er det serveren svarer med i `added`.
+3. Send de DR TV-afsnit, drtv_hent.py har lagt i Torrents de sidste 7 dage, samme vej. De står
+   i appen som torrents med navnet på mappen; "hashen" er sha1('drtv:' + DR's afsnits-id).
 
 Kun standardbiblioteket. Skriver kun til loggen når der skete noget, eller noget fejlede.
 """
+import hashlib
 import json
 import re
 import time
@@ -27,6 +30,8 @@ CONFIG = Path(__file__).resolve().parent.parent / "api" / "config.php"
 MAX_AGE = 300          # 5 min (serverens minimum): 540 sprang feeds over, som appen havde hentet 8 min. før
 PER_CALL = 8           # = PODCAST_MAX_REFRESH_PER_CALL i podcast_store.php
 TORRENT_DAYS = 7
+DRTV_STATE = Path(__file__).resolve().parent / "drtv_hentet.json"  # skrives af drtv_hent.py
+TORRENTS = Path("/5TB_DISK/Torrents")
 
 
 def log(msg):
@@ -90,8 +95,25 @@ def send_torrents():
         log(f"torrent: {navn}")
 
 
+def send_drtv():
+    if not DRTV_STATE.exists():
+        return
+    graense = time.time() - TORRENT_DAYS * 86400
+    nye = [
+        {"hash": hashlib.sha1(f"drtv:{ep_id}".encode()).hexdigest(), "name": p["mappe"],
+         "size": int(p.get("size") or 0), "completedAt": int(p["hentet"])}
+        for ep_id, p in json.loads(DRTV_STATE.read_text()).items()
+        if p.get("mappe") and int(p["hentet"]) > graense and (TORRENTS / p["mappe"]).is_dir()
+    ]
+    if not nye:
+        return
+    res = call("torrent.ingest", {"key": ingest_key(), "torrents": nye})
+    for navn in res.get("added", []):
+        log(f"drtv: {navn}")
+
+
 if __name__ == "__main__":
-    for opgave in (refresh_feeds, send_torrents):
+    for opgave in (refresh_feeds, send_torrents, send_drtv):
         try:
             opgave()
         except Exception as e:  # den ene må ikke vælte den anden

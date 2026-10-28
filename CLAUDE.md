@@ -708,6 +708,42 @@ var et bevidst valg, fordi qBittorrent ikke gemmer hvilken regel en torrent kom 
   torrents og 🔒, forkert kode afvist, rigtig kode viser 28 torrents, ✓ Set frem og tilbage,
   Podcast + TV skjuler dem, tokenet huskes efter genindlæsning, og et ugyldigt token glemmes.
 
+## DR TV som video i Torrents + oprydning på 5 TB-disken (2026-10-28)
+De DR TV-programmer, der følges i appen (`added_via='drtv'`, i dag Debatten, Deadline og
+Kommissionen), hentes som video til `/5TB_DISK/Torrents`. Hvert afsnit får sin egen mappe, ligesom en torrent,
+og ligger derfor sammen med torrents i Kodi (`smb://htpc/5TB_DISK/Torrents/`, sorteret efter
+dato) og i appens 🧲 Torrent. Robinson (Viaplay) er kopibeskyttet og kommer ikke med.
+
+- **`scraper/drtv_hent.py`** (cron `20,50 * * * *` via `run_drtv.sh`, log `scraper/drtv.log`,
+  `flock`): læser afsnitslisten fra appens egen cache (`episodes.feed`, som `tick.py` holder
+  frisk) og henter med **yt-dlp** i bedste kvalitet (DR's egne programmer er uden DRM: H.264
+  op til 1080p50, ca. 1,6 GB for en halv time). Ingen undertekster (Allans valg). Kun afsnit fra de sidste 7 dage.
+  **Nogle afsnit har separate lydspor, også "SpokenSubtitles"** (oplæste undertekster). De er
+  udelukket i `-f`. "English" og "English_2" er DR's fejlmærkning af den danske lyd i 192/128 kbps.
+  **`pkill -f yt-dlp` over SSH dræber også SSH-sessionens egen shell**, fordi ordet står i
+  kommandolinjen. Brug `pgrep -af` og `kill <pid>`.
+  Afsnittene hentes i `/5TB_DISK/.drtv-tmp` og flyttes først ind, når de er færdige.
+  Mappenavnet bliver `Deadline.2026-10-28.Drenge.der.hader.piger`.
+- **`scraper/drtv_hentet.json`** (gitignoreret) husker, hvad der er hentet, så et afsnit, som oprydningen
+  har slettet, ikke hentes igen. Et afsnit, der fejler, opgives efter 6 forsøg (`forsoeg`);
+  slet posten for at prøve igen.
+- **yt-dlp ligger i `scraper/.venv`** og opdateres én gang i døgnet af `run_drtv.sh`
+  (`.yt-dlp-opdateret` er stemplet), fordi DR's side ændrer sig.
+- **I appen:** `tick.py` (`send_drtv`) sender afsnittene til `torrent.ingest` med
+  `hash = sha1('drtv:' + DR's afsnits-id)`. Serveren er uændret.
+- **`scraper/oprydning.py`** (cron `5,35 * * * *` via `run_oprydning.sh`, log `scraper/oprydning.log`):
+  1. Torrents, der har **seedet i 7 døgn** (`seeding_time`), fjernes fra qBittorrent.
+     **Filerne bliver liggende.** qBittorrent havde ingen seedgrænse.
+  2. Er der **under 500 GB fri** (GB, ikke GiB: `df -h` viser ca. 466G), slettes de **ældste
+     mapper i Torrents**, hele mappen ad gangen, til der er 500 GB fri igen. Det gælder både
+     torrents og DR. Alderen er qBittorrents `completion_on`, hvis den stadig kender torrenten
+     (så slettes den dér med filerne). Ellers er det den nyeste mtime i mappen.
+     **`/5TB_DISK/Series` røres aldrig**, og det gør noget hentet den sidste uge heller ikke.
+     Ufærdige torrents røres heller ikke. Svarer qBittorrent ikke, sker der intet.
+  `./run_oprydning.sh --dry-run [--min-fri 800]` viser, hvad der ville ske.
+- Appen viser kun de 50 nyeste torrents, så det slettede (det ældste) står ikke i appen;
+  der er derfor ingen `torrent.remove`.
+
 ## Stjerner 1-3 og 📺 TV-filter i køen (2026-10-02)
 Afløser stjernerundturen fra afsnittet om superfavoritter nedenfor.
 
