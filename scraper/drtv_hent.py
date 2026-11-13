@@ -11,6 +11,9 @@ torrents i Kodi, og tick.py sender dem til appens 🧲 Torrent.
 - Bedste opløsning (DR's egne programmer er uden DRM, op til 1080p50), ingen undertekster.
   Hentes i /5TB_DISK/.drtv-tmp og flyttes først ind i Torrents, når filen er færdig, så hverken
   Kodi eller appen ser en halv fil.
+- Stream-adressen slås op i DR's API med afsnittets nummer fra linket (dr_stream), og yt-dlp
+  henter kun HLS-streamen. yt-dlp's eget DR-modul læser id'et på DR-siden, og det er et UUID
+  siden ca. 2026-10-30, som API'et afviser med 400 (yt-dlp issue #17979 / PR #17980).
 """
 import json
 import os
@@ -22,6 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +40,9 @@ YTDLP = Path(sys.executable).parent / "yt-dlp"
 DAGE = 7
 MAX_FORSOEG = 6
 MIN_FRI = 50 * 10**9  # oprydning.py holder 500 GB fri; det her er kun nødbremsen
+# DR's egne API'er, de samme som yt-dlp's DR-modul bruger
+DR_TOKEN = "https://isl.dr-massive.com/api/authorization/anonymous-sso"
+DR_VIDEOS = "https://production.dr-massive.com/api/account/items/{}/videos"
 
 
 def log(msg):
@@ -85,19 +92,42 @@ def mappenavn(titel, udgivet):
     return s[:150].strip(".")
 
 
-def hent(ep_id, link, navn):
+def dr_json(url, **kw):
+    with urllib.request.urlopen(urllib.request.Request(url, **kw), timeout=60) as r:
+        return json.load(r)
+
+
+def dr_stream(ep_id):
+    """HLS-adressen til afsnittets almindelige udgave, slået op med DR's numeriske afsnits-id."""
+    q = urllib.parse.urlencode({"device": "phone_android", "lang": "da", "supportFallbackToken": "true"})
+    tokens = dr_json(f"{DR_TOKEN}?{q}", headers={"content-type": "application/json"},
+                     data=json.dumps({"deviceId": str(uuid.uuid4()), "scopes": ["Catalog"],
+                                      "optout": True}).encode())
+    token = next(t["value"] for t in tokens if t.get("type") == "UserAccount")
+    q = urllib.parse.urlencode({"delivery": "stream", "device": "web_browser", "ff": "idp,ldp,rpt",
+                                "lang": "da", "resolution": "HD-1080", "sub": "Anonymous"})
+    streams = dr_json(f"{DR_VIDEOS.format(ep_id)}?{q}", headers={"authorization": f"Bearer {token}"})
+    # Kun StandardVideo: de andre udgaver er med oplæste undertekster, tegnsprog eller synstolkning
+    for s in streams:
+        if s.get("accessService") == "StandardVideo" and s.get("url"):
+            return s["url"]
+    raise RuntimeError(f"ingen StandardVideo hos DR: {[s.get('accessService') for s in streams]}")
+
+
+def hent(ep_id, navn):
+    url = dr_stream(ep_id)
     arbejde = TMP / navn
     shutil.rmtree(arbejde, ignore_errors=True)
     arbejde.mkdir(parents=True)
     r = subprocess.run(
         [str(YTDLP), "--quiet", "--no-warnings", "--no-progress",
-         # DR har også et spor med oplæste undertekster ("SpokenSubtitles"), det skal ikke med
+         # Skulle et lydspor i streamen være oplæste undertekster ("SpokenSubtitles"), skal det ikke med
          "-f", "bv*[format_id!*=SpokenSubtitles]+ba[format_id!*=SpokenSubtitles]"
                "/b[format_id!*=SpokenSubtitles]",
          "--merge-output-format", "mp4",
          "--no-write-subs", "--no-embed-subs",  # ingen undertekster (Allans valg)
          "--concurrent-fragments", "4", "--retries", "10", "--fragment-retries", "10",
-         "-o", str(arbejde / f"{navn}.%(ext)s"), link],
+         "-o", str(arbejde / f"{navn}.%(ext)s"), url],
         capture_output=True, text=True, timeout=3 * 3600)
     videoer = [f for f in arbejde.iterdir() if f.suffix in (".mp4", ".mkv")]
     if r.returncode != 0 or not videoer:
@@ -134,7 +164,7 @@ def main():
                 log("FEJL: under 50 GB fri på disken — henter ikke")
                 return
             try:
-                maal, stoerrelse = hent(ep_id, ep["link_url"], mappenavn(ep["title"], udgivet))
+                maal, stoerrelse = hent(ep_id, mappenavn(ep["title"], udgivet))
             except Exception as e:
                 post.update(titel=ep["title"], forsoeg=post.get("forsoeg", 0) + 1)
                 state[ep_id] = post

@@ -716,10 +716,21 @@ dato) og i appens 🧲 Torrent. Robinson (Viaplay) er kopibeskyttet og kommer ik
 
 - **`scraper/drtv_hent.py`** (cron `20,50 * * * *` via `run_drtv.sh`, log `scraper/drtv.log`,
   `flock`): læser afsnitslisten fra appens egen cache (`episodes.feed`, som `tick.py` holder
-  frisk) og henter med **yt-dlp** i bedste kvalitet (DR's egne programmer er uden DRM: H.264
+  frisk) og henter i bedste kvalitet (DR's egne programmer er uden DRM: H.264
   op til 1080p50, ca. 1,6 GB for en halv time). Ingen undertekster (Allans valg). Kun afsnit fra de sidste 7 dage.
-  **Nogle afsnit har separate lydspor, også "SpokenSubtitles"** (oplæste undertekster). De er
-  udelukket i `-f`. "English" og "English_2" er DR's fejlmærkning af den danske lyd i 192/128 kbps.
+  **Stream-adressen slår scriptet selv op** (`dr_stream`): anonymt token fra
+  `isl.dr-massive.com/api/authorization/anonymous-sso` og så
+  `production.dr-massive.com/api/account/items/<nummer>/videos` med afsnittets **numeriske** id fra
+  linket (`…_633509`). yt-dlp får kun HLS-adressen. **yt-dlp's eget DR-modul virker ikke siden ca.
+  2026-10-30:** DR-siden har nu et UUID som id, API'et svarer 400 på det, og rettelsen (yt-dlp PR
+  #17980) var ikke flettet pr. 2026-11-13. Alt fejlede derfor fra 2/11 til 13/11.
+  **API'et giver flere udgaver** (`accessService`); kun `StandardVideo` hentes, ikke oplæste
+  undertekster, tegnsprog eller synstolkning. `-f` udelukker desuden et lydspor med "SpokenSubtitles"
+  i navnet. "English" og "English_2" er DR's fejlmærkning af den danske lyd i 192/128 kbps; yt-dlp
+  vælger 192.
+  **Indhentning efter et nedbrud:** slet de fejlede poster i `drtv_hentet.json` og kør én gang med
+  flere dage under samme lås:
+  `flock -n /tmp/drtv_hent.lock .venv/bin/python -c "import drtv_hent as d; d.DAGE = 14; d.main()" >> drtv.log 2>&1`.
   **`pkill -f yt-dlp` over SSH dræber også SSH-sessionens egen shell**, fordi ordet står i
   kommandolinjen. Brug `pgrep -af` og `kill <pid>`.
   Afsnittene hentes i `/5TB_DISK/.drtv-tmp` og flyttes først ind, når de er færdige.
@@ -728,7 +739,8 @@ dato) og i appens 🧲 Torrent. Robinson (Viaplay) er kopibeskyttet og kommer ik
   har slettet, ikke hentes igen. Et afsnit, der fejler, opgives efter 6 forsøg (`forsoeg`);
   slet posten for at prøve igen.
 - **yt-dlp ligger i `scraper/.venv`** og opdateres én gang i døgnet af `run_drtv.sh`
-  (`.yt-dlp-opdateret` er stemplet), fordi DR's side ændrer sig.
+  (`.yt-dlp-opdateret` er stemplet). Den bruges nu kun til HLS-hentningen; ændrer DR sit API, er det
+  `dr_stream`, der skal rettes (se yt-dlp's `extractor/drtv.py` for, hvordan de gør).
 - **I appen:** `tick.py` (`send_drtv`) sender afsnittene til `torrent.ingest` med
   `hash = sha1('drtv:' + DR's afsnits-id)`. Serveren er uændret.
 - **`scraper/oprydning.py`** (cron `5,35 * * * *` via `run_oprydning.sh`, log `scraper/oprydning.log`):
