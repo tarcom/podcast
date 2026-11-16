@@ -564,6 +564,19 @@ try {
             }
             torrent_ingest($config, $body);
 
+        // Ryd dubletter i afsnits-cachen (samme lyd-URL under to id'er) — se
+        // podcast_dedupe_episodes(). Kaldes af HTPC-cron'en med samme nøgle som torrent.ingest.
+        case 'episodes.dedupe':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            $t = torrent_config($config);
+            if (!hash_equals((string) $t['ingest_key'], (string) ($body['key'] ?? ''))) {
+                json_response(['status' => false, 'error' => 'Forkert nøgle'], 403);
+            }
+            $pdo = db($config);
+            json_response(['status' => true] + podcast_dedupe_episodes($pdo));
+
         default:
             json_response(['status' => false, 'error' => 'Unknown action'], 404);
     }

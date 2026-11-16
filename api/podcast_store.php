@@ -112,6 +112,23 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
         return 0;
     }
 
+    // Afsnit, cachen allerede kender (typisk fra RSS), beholder deres id. Før indsatte denne
+    // fallback ALT igen under Podcast Index' egne id'er, hver gang et feeds RSS en sjælden gang
+    // fejlede — så stod afsnittet to gange i køen, og hørte man det ene, var det andet stadig
+    // uhørt (Store Penge, Investeringspodcasten, All-In og Børsen investor; ryddet op 2026-11-16
+    // med podcast_dedupe_episodes() nedenfor). Samme nøgler som rss_refresh_feed().
+    $kendte = $pdo->prepare('SELECT episode_id, title, published_at, audio_url FROM podcast_episodes WHERE feed_id = :f');
+    $kendte->execute(['f' => $feedId]);
+    $byAudio = [];
+    $byTitleDate = [];
+    foreach ($kendte->fetchAll() as $r) {
+        $a = trim((string) ($r['audio_url'] ?? ''));
+        if ($a !== '') {
+            $byAudio[$a] = (int) $r['episode_id'];
+        }
+        $byTitleDate[mb_strtolower(trim((string) $r['title'])) . '|' . (int) $r['published_at']] = (int) $r['episode_id'];
+    }
+
     $upsert = $pdo->prepare(
         'INSERT INTO podcast_episodes
             (feed_id, episode_id, title, description, published_at, audio_url, link_url, image, duration_sec)
@@ -128,9 +145,11 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
             continue;
         }
         $audio = trim((string) ($ep['enclosureUrl'] ?? ''));
+        $key = mb_strtolower(trim((string) ($ep['title'] ?? ''))) . '|' . (int) ($ep['datePublished'] ?? 0);
+        $epId = ($audio !== '' && isset($byAudio[$audio])) ? $byAudio[$audio] : ($byTitleDate[$key] ?? (int) $ep['id']);
         $upsert->execute([
             'feed'  => $feedId,
-            'ep'    => (int) $ep['id'],
+            'ep'    => $epId,
             'title' => mb_substr((string) ($ep['title'] ?? 'Ukendt episode'), 0, 512),
             'descr' => fit_text((string) ($ep['description'] ?? '')),
             'pub'   => (int) ($ep['datePublished'] ?? 0),
@@ -146,6 +165,89 @@ function podcast_refresh_feed(array $config, PDO $pdo, string $deviceId, int $fe
     }
 
     return $inserted;
+}
+
+/**
+ * Dubletter: samme feed og samme lyd-URL (og titel) under flere episode_id'er. Opstod, når et feeds
+ * RSS en sjælden gang fejlede, og Podcast Index-fallbacken i podcast_refresh_feed() indsatte
+ * afsnittene igen under PI's egne id'er (rettet samme dag). Køen viste dem to gange, og hørte man
+ * det ene, stod det andet stadig som uhørt — det lignede en app, der ikke var opdateret.
+ *
+ * Beholder det id, hvis lytte-tilstand er nyest, ellers det laveste (RSS' eget id; PI's id'er er
+ * større). Tilstand på de andre id'er flyttes over pr. enhed: den nyeste position vinder, og er
+ * afsnittet hørt på et af id'erne, er det hørt. Idempotent; kaldes af HTPC-cron'en (tick.py).
+ *
+ * @return array{groups:int, removed:int, movedState:int}
+ */
+function podcast_dedupe_episodes(PDO $pdo): array
+{
+    $groups = $pdo->query(
+        "SELECT feed_id, GROUP_CONCAT(episode_id ORDER BY episode_id) AS ids
+         FROM podcast_episodes
+         WHERE audio_url IS NOT NULL AND audio_url <> ''
+         GROUP BY feed_id, MD5(audio_url)
+         HAVING COUNT(*) > 1 AND COUNT(DISTINCT LOWER(TRIM(title))) = 1"
+    )->fetchAll();
+
+    $removed = 0;
+    $moved = 0;
+    foreach ($groups as $g) {
+        $feedId = (int) $g['feed_id'];
+        $ids = array_map('intval', explode(',', (string) $g['ids']));
+        $in = implode(',', $ids); // kun heltal — sikkert at sætte direkte ind
+        $states = $pdo->query(
+            "SELECT device_id, episode_id, played_at, position_sec, duration_sec, UNIX_TIMESTAMP(updated_at) AS upd
+             FROM podcast_episode_state WHERE feed_id = $feedId AND episode_id IN ($in)"
+        )->fetchAll();
+
+        $keep = $ids[0];
+        $nyeste = -1;
+        foreach ($states as $s) {
+            if ((int) $s['upd'] > $nyeste) {
+                $nyeste = (int) $s['upd'];
+                $keep = (int) $s['episode_id'];
+            }
+        }
+
+        $byDev = [];
+        foreach ($states as $s) {
+            $byDev[(string) $s['device_id']][(int) $s['episode_id']] = $s;
+        }
+        foreach ($byDev as $dev => $rows) {
+            $newest = null;
+            $played = null;
+            foreach ($rows as $r) {
+                if ($newest === null || (int) $r['upd'] > (int) $newest['upd']) {
+                    $newest = $r;
+                }
+                if ($r['played_at'] !== null && ($played === null || (string) $r['played_at'] > $played)) {
+                    $played = (string) $r['played_at'];
+                }
+            }
+            if (!isset($rows[$keep])) {
+                $pdo->prepare('UPDATE podcast_episode_state SET episode_id = :keep WHERE device_id = :dev AND episode_id = :ep')
+                    ->execute(['keep' => $keep, 'dev' => $dev, 'ep' => (int) $newest['episode_id']]);
+                $moved++;
+            } elseif ((int) $newest['episode_id'] !== $keep) {
+                $pdo->prepare('UPDATE podcast_episode_state SET position_sec = :pos, duration_sec = :dur
+                               WHERE device_id = :dev AND episode_id = :keep')
+                    ->execute(['pos' => (int) $newest['position_sec'], 'dur' => (int) $newest['duration_sec'], 'dev' => $dev, 'keep' => $keep]);
+                $moved++;
+            }
+            if ($played !== null) {
+                $pdo->prepare('UPDATE podcast_episode_state SET played_at = :p WHERE device_id = :dev AND episode_id = :keep AND played_at IS NULL')
+                    ->execute(['p' => $played, 'dev' => $dev, 'keep' => $keep]);
+            }
+        }
+
+        $drop = array_values(array_diff($ids, [$keep]));
+        if ($drop) {
+            $d = implode(',', $drop);
+            $pdo->exec("DELETE FROM podcast_episode_state WHERE feed_id = $feedId AND episode_id IN ($d)");
+            $removed += (int) $pdo->exec("DELETE FROM podcast_episodes WHERE feed_id = $feedId AND episode_id IN ($d)");
+        }
+    }
+    return ['groups' => count($groups), 'removed' => $removed, 'movedState' => $moved];
 }
 
 /**

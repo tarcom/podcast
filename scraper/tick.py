@@ -9,6 +9,9 @@
    nyt, er det serveren svarer med i `added`.
 3. Send de DR TV-afsnit, drtv_hent.py har lagt i Torrents de sidste 7 dage, samme vej. De står
    i appen som torrents med navnet på mappen; "hashen" er sha1('drtv:' + DR's afsnits-id).
+4. Ryd dubletter i afsnits-cachen (episodes.dedupe): samme lyd-URL under to id'er, som Podcast
+   Index-fallbacken lavede, når et RSS fejlede. Fallbacken er rettet 2026-11-16; det her er
+   sikkerhedsnettet, og det skriver kun i loggen, når det har fjernet noget.
 
 Kun standardbiblioteket. Skriver kun til loggen når der skete noget, eller noget fejlede.
 """
@@ -112,8 +115,14 @@ def send_drtv():
         log(f"drtv: {navn}")
 
 
+def dedupe():
+    res = call("episodes.dedupe", {"key": ingest_key()})
+    if int(res.get("removed", 0)):
+        log(f"dubletter: {res['removed']} afsnit fjernet, {res.get('movedState', 0)} lyttetilstande flyttet")
+
+
 if __name__ == "__main__":
-    for opgave in (refresh_feeds, send_torrents, send_drtv):
+    for opgave in (refresh_feeds, send_torrents, send_drtv, dedupe):
         try:
             opgave()
         except Exception as e:  # den ene må ikke vælte den anden
