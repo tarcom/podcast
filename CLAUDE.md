@@ -98,6 +98,13 @@ skulle huskes pr. enhed. Desuden er fjernbetjeningen fra `tv` (aogj.com/tv) nu e
 - **Slut på afsnit lukker afspilleren** (`closePlayer(false)`), så et færdigt afsnit ikke bliver
   hængende i notifikationen. Stadig ingen auto-videre.
 - `window.__dkPodLuk` = luk afspilleren — Android-app'ens notifikationsknap "Luk" kalder den.
+  `closePlayer()` siger "luk" til app'en en gang til efter 600 ms: når `src` fjernes og `load()`
+  kaldes, sender Chromium en sidste hændelse med den gamle `currentSrc`, og app-broen 3.0.0 viste
+  så notifikationen igen (titel "All DK Podcasts"). 3.0.1 kigger på `src`-attributten.
+- **`resume()` spiller med det samme** og spørger `state.get` bagefter (`syncFromServer(true)`
+  spoler, hvis serveren er nyere). Før ventede afspilningen på svaret med en 1,5-sek.-timer som
+  nødudgang, og i en side skjult i over 5 min. udskyder Chromium timere med op til et minut — så
+  PLAY fra notifikationen eller bilen kunne hænge. Fundet i emulatoren.
 
 ### Filtrene huskes pr. enhed
 `lib/prefs.ts` (localStorage `podcast_pref_*`): `starFilter`, `catFilter`, `rate`, `tvSession`,

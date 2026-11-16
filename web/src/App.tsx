@@ -568,6 +568,12 @@ export default function App() {
       setSleepLeft(0)
       clearNowPlaying()
       nativeClosePlayer()
+      // Lydelementet sender en sidste hændelse, mens det tømmes, og app-broen (3.0.0) tog den for
+      // et afsnit og viste notifikationen igen — med titlen "All DK Podcasts". Derfor en gang til,
+      // når hændelserne har lagt sig, hvis der ikke er startet noget nyt imens.
+      window.setTimeout(() => {
+        if (!currentRef.current) nativeClosePlayer()
+      }, 600)
       if ('mediaSession' in navigator) {
         try {
           navigator.mediaSession.metadata = null
@@ -589,7 +595,9 @@ export default function App() {
   // Har en anden enhed (eller tv'et) lyttet videre på det afsnit, der står på pause her, siden vi
   // sidst skrev? Så fortsætter vi dér — og er det hørt færdigt, lukkes afspilleren. Uden det
   // ville et tryk på afspil her skrive den gamle position oven i den nye.
-  const syncFromServer = useCallback(async () => {
+  // `justResumed`: kaldt lige efter et tryk på afspil (se resume) — så må den spole, selvom der
+  // spilles, men den lukker ikke afspilleren midt i lyden.
+  const syncFromServer = useCallback(async (justResumed = false) => {
     const ep = currentRef.current
     const el = audioRef.current
     if (!ep || !el || !navigator.onLine) return
@@ -600,10 +608,11 @@ export default function App() {
     } catch {
       return
     }
-    if (!st || currentRef.current?.episodeId !== ep.episodeId || !el.paused) return
+    if (!st || currentRef.current?.episodeId !== ep.episodeId || (!el.paused && !justResumed)) return
     if (st.updated * 1000 <= localAt.current + 5000) return // vores egen er den nyeste
     localAt.current = st.updated * 1000
     if (st.playedAt) {
+      if (justResumed) return
       closePlayerRef.current(false)
       const patch = (list: EpisodeRow[]) => list.map((e) => (e.episodeId === ep.episodeId ? { ...e, playedAt: st.playedAt } : e))
       setQueue(patch)
@@ -619,19 +628,19 @@ export default function App() {
     showToast(`Fortsætter fra ${fmtClock(st.positionSec)}, hvor du slap på en anden enhed`)
   }, [deviceId, showToast])
 
-  // Genoptag: tjek først (højst ét sekund og et halvt), om der er lyttet videre et andet sted.
+  // Genoptag: spil MED DET SAMME, og spørg så serveren, om der er lyttet videre et andet sted —
+  // er der, spoles der dertil bagefter. Før ventede afspilningen på svaret, og i en side der har
+  // ligget skjult i over 5 min. udskyder Chromium timere med op til et minut, så PLAY fra
+  // notifikationen eller bilen kunne tage lang tid (fundet i emulatoren 16/11).
   const resume = useCallback(async () => {
     const el = audioRef.current
     const ep = currentRef.current
     if (!el || !ep?.audioUrl) return
     wantPlay.current = true
-    if (navigator.onLine && Date.now() - lastSync.current > 60_000) {
-      await Promise.race([syncFromServer(), new Promise((r) => window.setTimeout(r, 1500))])
-    }
-    if (!currentRef.current) return // lukket imens (hørt færdig andetsteds)
+    const sync = navigator.onLine && Date.now() - lastSync.current > 60_000
     if (!el.getAttribute('src')) {
       el.src = ep.audioUrl
-      el.currentTime = currentRef.current.positionSec || 0
+      el.currentTime = ep.positionSec || 0
     }
     el.defaultPlaybackRate = rateRef.current
     el.playbackRate = rateRef.current
@@ -641,6 +650,7 @@ export default function App() {
     } catch {
       /* fx ingen dækning — onError viser pop-up'en */
     }
+    if (sync) syncFromServer(true)
   }, [syncFromServer])
 
   // Genskab afsnittet fra sidste gang: lyden indlæses (kun metadata), positionen sættes i
