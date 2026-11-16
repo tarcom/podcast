@@ -378,6 +378,25 @@ try {
             $pdo = db($config);
             json_response(['status' => true, 'item' => podcast_episode($pdo, $feedId, $episodeId)]);
 
+        // Ét afsnits lytte-tilstand for enheden. Bruges når afspilleren genskabes eller genoptages
+        // efter en pause: har en anden enhed (eller tv'et i stuen) lyttet videre imens, skal man
+        // fortsætte DÉR i stedet for at skrive sin egen gamle position oven i. `updated` er
+        // unix-sekunder (UNIX_TIMESTAMP er uafhængig af sessionens tidszone).
+        case 'state.get':
+            $deviceId = $deviceFromGet();
+            $episodeId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+            if ($episodeId === 0) {
+                json_response(['status' => false, 'error' => 'id is required'], 422);
+            }
+            $pdo = db($config);
+            $stmt = $pdo->prepare(
+                'SELECT position_sec, duration_sec, played_at, UNIX_TIMESTAMP(updated_at) AS updated
+                 FROM podcast_episode_state WHERE device_id = :dev AND episode_id = :ep LIMIT 1'
+            );
+            $stmt->execute(['dev' => $deviceId, 'ep' => $episodeId]);
+            $row = $stmt->fetch();
+            json_response(['status' => true, 'item' => $row ?: null]);
+
         // Den langsomme halvdel: hent forældede favoritters RSS (0,15-0,38 sek. pr. feed, op til 8).
         // Svarer med hvor meget der reelt kom ind, så frontenden kun genhenter køen når der ER nyt.
         // `maxAge` (sek., 300-86400) bruges af HTPC-cron'en hvert 10. min. til at tage ALLE feeds
