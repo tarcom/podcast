@@ -1,5 +1,5 @@
 // App lives under /podcast/ on aogj.com — all shell paths are scoped there.
-const CACHE_NAME = 'nordpod-v17'
+const CACHE_NAME = 'nordpod-v18'
 const BASE = '/podcast/'
 const APP_SHELL = [
   BASE, BASE + 'index.html', BASE + 'manifest.webmanifest',
@@ -52,6 +52,9 @@ self.addEventListener('fetch', (event) => {
   }
   // API is always live.
   if (url.pathname.includes('index.php') || url.pathname.includes('/api/')) return
+  // version.json siger hvilket byg der er lagt op (src/lib/version.ts) — det må aldrig komme fra
+  // en cache, ellers ville en gammel side aldrig opdage, at der er en ny.
+  if (url.pathname.endsWith('/version.json')) return
 
   // Navigation (HTML) + manifest → network-first, så nye index.html/manifest altid
   // slår igennem (ellers serverer SW en gammel cachet shell efter en opdatering).

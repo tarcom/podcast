@@ -197,6 +197,7 @@ export async function listTorrents(deviceId: string, token: string): Promise<{ i
       positionSec: 0,
       kind: 'torrent' as const,
       sizeBytes: n(r.size_bytes),
+      rawName: s(r.name),
     }))
     return { items, stars }
   } catch (e) {
@@ -246,6 +247,23 @@ export async function feedEpisodes(deviceId: string, feedId: number): Promise<Ep
 }
 
 // --- Played / position state ---
+// Ét afsnits tilstand på serveren. `updated` er unix-sekunder for sidste ændring — sammenlignes
+// med hvornår DENNE enhed sidst skrev, så en pauset afspiller kan fortsætte, hvor en anden enhed
+// (eller tv'et) slap, i stedet for at skrive sin gamle position oven i.
+export type ServerState = { positionSec: number; durationSec: number; playedAt: string | null; updated: number }
+
+export async function stateGet(deviceId: string, episodeId: number): Promise<ServerState | null> {
+  const { data } = await apiGet({ action: 'state.get', deviceId, id: episodeId })
+  const it = data && (data.item as RawRecord | null)
+  if (!it) return null
+  return {
+    positionSec: n(it.position_sec),
+    durationSec: n(it.duration_sec),
+    playedAt: (it.played_at as string | null) ?? null,
+    updated: n(it.updated),
+  }
+}
+
 export async function setState(
   deviceId: string,
   payload: { episodeId: number; feedId: number; played?: boolean; positionSec?: number; durationSec?: number },

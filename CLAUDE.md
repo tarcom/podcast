@@ -34,7 +34,7 @@ er lette at snuble over.
   allerede er frisk, når appen åbnes. Appen skal stadig virke uden cron'en — den er en
   genvej, ikke en forudsætning. Se afsnittet om torrents.
 - **PWA-stier er hardcodet til `/podcast/`** i `web/public/sw.js` + `manifest.webmanifest` (de
-  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v15`**).
+  path-rewrites IKKE af Vite). Cache-navn bumpes ved shell-ændringer (nu **`nordpod-v18`**).
   Lyd-cachen **`nordpod-audio-v1`** er en anden cache og skal blive stående — se afsnittet om
   offline-download.
 - **Installerbarhed (fixet 2026-07-27):** `web/index.html` manglede `<link rel="manifest">` (Vite
@@ -48,6 +48,98 @@ er lette at snuble over.
   bevidst fravalgt (kræver grå selvhostet converter). Afsnit uden lydfil → "åbn hos udbyder"-link.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
   `?action=migrate` én gang efter første deploy for at oprette tabeller.
+
+## 2026-11-16: afspilleren bliver, køen opdaterer sig, Stuen er en fane
+
+Udløst af tre ting fra Allan: (1) "kan det passe at den nogle gange ikke er opdateret?",
+(2) i Android-app'en forsvandt afspilleren fra notifikationen, når han pausede, og (3) filtrene
+skulle huskes pr. enhed. Desuden er fjernbetjeningen fra `tv` (aogj.com/tv) nu en fane.
+
+### "Ikke opdateret" havde fire årsager
+1. **Dubletter i køen.** Fejlede et feeds RSS en sjælden gang, indsatte Podcast Index-fallbacken
+   i `podcast_refresh_feed()` alle afsnit igen under PI's egne id'er (de store, ~6,3e10). 128 par i
+   cachen pr. 16/11, 17 af dem i køens 200 (Store Penge, Investeringspodcasten, All-In, Børsen
+   investor). Hørte man det ene, stod det andet som uhørt — Allan havde markeret "Anthropic på
+   børsen" som hørt to gange med 12 sekunders mellemrum. **Rettet:** fallbacken genbruger nu id'et
+   fra cachen (lyd-URL, så titel+dato — samme nøgler som `rss_refresh_feed()`), og
+   `podcast_dedupe_episodes()` / action **`episodes.dedupe`** (POST, ingest-nøglen) rydder op:
+   ét afsnit pr. lyd-URL og titel, id'et med den nyeste lyttetilstand beholdes, tilstanden fra de
+   andre flyttes over (nyeste position vinder; hørt på ét id = hørt). Kørt live: 128 fjernet,
+   0 hørt-mærker eller positioner tabt (sammenlignet før/efter). `tick.py` kalder den hver gang
+   som sikkerhedsnet. **Test:** `php test/test_dedupe.php` mod engangsbasen `podcast_toer`.
+2. **Android-app'en hørte ikke, at den kom frem.** Chromium regner en WebView, der ikke hænger i
+   et vindue, for *synlig*. Lukkede man app'en med tilbage-knappen, troede siden, den var synlig
+   hele tiden — og når app'en blev åbnet igen, kom der intet `visibilitychange`, så køen blev
+   ikke hentet. Nu tæller `visibilitychange`, `focus`, `pageshow`, `online` og app'ens eget
+   signal **`dkpod:forgrund`** (fra `MainActivity.onResume`), og køen tjekkes hvert 5. minut,
+   mens app'en er fremme (`refreshAll()`, højst hvert minut medmindre den tvinges).
+   Overskriften viser **"opdateret kl. …"**.
+3. **Gammel kode efter et deploy.** Service workeren opdaterer kun, når `sw.js` ændrer sig, og en
+   side der aldrig lukkes (Android-app'en!) blev aldrig genindlæst. Hvert byg har nu et id
+   (`__BUILD_ID__`, `vite.config.ts`), som også ligger i **`dist/version.json`**. Afviger det,
+   genindlæses siden af sig selv, når den er skjult og intet spiller; ellers vises "Ny udgave —
+   Genindlæs". `version.json` hentes med `?t=` og er netværk-kun i `sw.js`.
+4. **Positionen fra en anden enhed.** En pauset afspiller kunne skrive sin gamle position oven i
+   den, man havde lyttet videre til på pc'en (eller på tv'et). Nyt endpoint **`state.get`**
+   (`deviceId`, `id` → position, played_at og `updated` som unix-sekunder); ved genoptag, ved
+   forgrund og ved genskabelse sammenlignes serverens `updated` med hvornår *denne* enhed sidst
+   skrev (`localAt`). Er serveren nyere, fortsættes dér ("Fortsætter fra 10:34, hvor du slap på
+   en anden enhed"), og er afsnittet hørt færdigt andetsteds, lukkes afspilleren.
+
+### Afspilleren
+- **Genskabes efter genindlæsning** (`lib/nowplaying.ts`, localStorage `podcast_nowplaying`):
+  afsnit, position og varighed, uden beskrivelsen. Står på pause; lyden indlæses kun som metadata.
+  En fejl ved indlæsningen viser **ikke** link-out-pop-up'en, medmindre man selv har trykket
+  afspil (`wantPlay`) — ellers larmede et genskabt afsnit uden dækning ved opstart.
+- **Mini-afspiller** i bunden (cover, titel, −10/▶/+30, tynd fremdriftsbjælke) og **stor
+  afspiller** (`Spiller.tsx`) ved tryk: stort cover, spoling med resttid, **hastighed** (1 → 1,2 →
+  1,5 → 1,75 → 2 → 0,8×, huskes pr. enhed), **sove-timer** (15/30/45/60/90 min, så fra),
+  "På tv'et", "Om afsnittet" og **✕ Luk afspilleren**. Den gamle grønne footer er væk.
+- **Slut på afsnit lukker afspilleren** (`closePlayer(false)`), så et færdigt afsnit ikke bliver
+  hængende i notifikationen. Stadig ingen auto-videre.
+- `window.__dkPodLuk` = luk afspilleren — Android-app'ens notifikationsknap "Luk" kalder den.
+
+### Filtrene huskes pr. enhed
+`lib/prefs.ts` (localStorage `podcast_pref_*`): `starFilter`, `catFilter`, `rate`, `tvSession`,
+`stuenBrugt`. Device-id'et er fælles (`allan-main`), så det kan ikke ligge på serveren. At en kø
+åbner filtreret, ses på de tændte mærkater og på **"Viser N af M · X uhørte"**. 🧲 Torrent i et
+gemt filter droppes på en enhed uden koden.
+
+### Stuen (fanen, `Stuen.tsx` + `lib/tv.ts`)
+Samme tjeneste som aogj.com/tv (`tv-helper` på HTPC, port 8097, projektet `tv`): status, alt på
+disken nyeste øverst, mapper, søgning, tænd/sluk (sluk kræver to tryk), og når noget spiller:
+spol, pause, stop, undertekster, lydspor og Denon'ens lydstyrke. **Virker kun hjemme.**
+- **I Chrome** henter siden direkte fra `http://192.168.1.85:8097` og kræver tilladelsen *enheder
+  på dit lokale netværk* (den samme, aogj.com/tv bruger). Siden spørger først HTPC, når Stuen har
+  været åbnet på enheden (`stuenBrugt`), så Chrome-dialogen ikke dukker op for en, der aldrig
+  bruger den.
+- **I Android-app'en** går kaldene gennem app'en (`AndroidHost.tvKald` → `window.__dkPodTvSvar`),
+  fordi en WebView ikke må kalde http fra https. Se `podcast-android/README.md`.
+- **Torrent → tv:** pop-up'en for en torrent har "Afspil på tv'et". Torrenten findes i
+  `Torrents` på navnet fra qBittorrent (`rawName`, nyt felt fra `torrents.list`); en sæsonpakke
+  åbnes som mappe i Stuen.
+- **Podcast → tv:** "På tv'et" i den store afspiller og i afsnittets pop-up sender lyd-URL'en og
+  positionen til `tv-helper` (`POST /api/afspil {url, titel, start, meta}`). Kodi spiller den
+  på tv'et (tv og Denon tændes). Mens app'en er fremme, poller den status hvert 15. sek.
+  (`TvSession`) og gemmer positionen på afsnittet; er det spillet over 97 %, markeres det hørt.
+  Den lokale afspiller pauses først. **Afprøvning tænder det rigtige tv i stuen — spørg først.**
+
+### Udseende
+CSS-variabler og **mørkt tema** (`prefers-color-scheme`; i Android-app'en følger WebView'en app'ens
+tema, som følger telefonen). På mobil (≤ 720 px) ligger fanerne som **bundmenu** med ikoner
+(`ikoner.tsx`, egne SVG'er — ingen ikon-pakke), toppen er kompakt, og mini-afspilleren ligger
+lige over menuen. Korte beskeder vises som en "toast" nederst. Androids tilbage-knap lukker det
+øverste først (`lib/back.ts`: `pushBack()` → `window.__dkPodTilbage()`).
+
+### Test uden at røre Allans data
+`test/testproxy.py` serverer `web/dist` på `http://localhost:8572/podcast/` og sender
+`/podcast/api/*` til aogj.com med `allan-main` byttet ud med `claude-test`.
+`test/seed_testenhed.py` giver test-enheden fire af de rigtige favoritter (`remove` fjerner dem
+igen). `test/test_web.py` (Selenium, headless Chrome, mobil-skærm) afprøver kø, mørkt tema,
+filtre der huskes, afspilning, hastighed, sove-timer, genskabelse, "fortsæt hvor en anden enhed
+slap", ny udgave, ✕, Favoritter og Stuen (kun læsning) — 27 tjek, alle grønne 16/11. Emulatoren
+kan pege på samme proxy (`10.0.2.2:8572`), se `podcast-android/README.md`. Lint (`npm run lint`)
+er ren — også de tre fejl, der lå i forvejen.
 
 ## Nyere tilføjelser (2026-07-26)
 - **Kø grupperet pr. dag** (`groupByDay`/`dayLabel` i App.tsx): "I dag"/"I går"/ugedag (<7 dage)/
@@ -777,7 +869,8 @@ Afløser stjernerundturen fra afsnittet om superfavoritter nedenfor.
   stjernerne; ★★★ har desuden `.s3` (lidt kraftigere gul). ★ er en almindelig favorit.
 - **Filter i Kø-fanen** på egen række under overskriften: **★ ★★ ★★★ 📺 TV** + "Vis alle".
   Stjernerne kan tændes sammen (★★ + ★★★ = alt med mindst to), TV skærer derudover ned til
-  TV-programmer (`tvIds` fra favoritterne eller `isTvEpisode`). Gemmes **ikke** mellem besøg,
+  TV-programmer (`tvIds` fra favoritterne eller `isTvEpisode`). **Huskes pr. enhed siden
+  2026-11-16** (se afsnittet om den dato øverst) — før gemtes det **ikke** mellem besøg,
   af samme grund som før. Erstatter ★★-knappen ved Opdatér.
 - **Afprøvet** med headless Chrome mod det nye byg via en lille proxy, der serverede `web/dist`
   og sendte API-kaldene til aogj.com med `allan-main` byttet ud med et test-device (seedet med

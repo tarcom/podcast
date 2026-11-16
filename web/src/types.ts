@@ -29,6 +29,7 @@ export type EpisodeRow = {
   updatedAt?: string | null // hvornår state sidst blev rørt => "senest lyttet" i Fortsætter
   kind?: 'torrent' // hentet af qBittorrent på HTPC (listTorrents) — hverken podcast eller TV
   sizeBytes?: number // kun torrents
+  rawName?: string // kun torrents: navnet på disken (/5TB_DISK/Torrents/<navn>) — til "Afspil på tv'et"
 }
 
 export type Favorite = {
