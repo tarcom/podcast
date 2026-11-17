@@ -49,6 +49,55 @@ er lette at snuble over.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
   `?action=migrate` én gang efter første deploy for at oprette tabeller.
 
+## 2026-11-17: Afspil på …, video fra HTPC, notifikationer, selvopdatering
+
+Udløst af en lang liste fra Allan. Alt afprøvet, også på det rigtige tv og en rigtig højttaler
+(med lov).
+
+- **Køen:** podcastens navn står på **sin egen linje over titlen** (`.ep-pod`) — billedet på et
+  afsnit er ofte ikke podcastens, så det var svært at se, hvad det var. **Mærkaterne knækker ikke
+  længere midt i** ("#11 / i DK", "DR / TV", "Fortsætter" stod på to linjer): `.ep-meta` er en
+  flex-række, mærkaterne `nowrap`, og CSS'en rammer kun `.ep-text > span`, ikke alle spans.
+  **Udbyderen** (Omny, Simplecast, Acast …) vises **kun**, når afsnittet ikke kan spilles her og
+  skal ses/høres hos den (DR TV, Viaplay, Podimo) — `showSource` i `EpisodeItem`.
+- **"Hent uhørte til offline"** (5/10/20) ligger nu under **Hentet**, ikke øverst i køen.
+- **Torrent står nederst i Favoritter**, også uden koden (så er kortet låst, og et tryk beder om
+  koden i køen). Stjernerne gælder alle torrents og dermed filteret. Det er det eneste i køen,
+  der ikke er en favorit — DR TV-videoerne (nedenfor) hører til deres programmer.
+- **DR TV-dubletter:** `tick.py` sender de DR TV-afsnit, HTPC har hentet som video, som
+  "torrents" (`hash = sha1('drtv:' + DR's nummer)`), så de stod to gange. `torrents.list` sender
+  nu `hash`, og web-app'en skjuler torrents, hvis hash matcher et DR TV-afsnit i køen
+  (`drHashes`, `crypto.subtle`).
+- **Video fra HTPC** (torrents og DR TV): pop-up'en slår filen op på HTPC (`tv-helper`
+  `/api/find?navn=` eller `?drtv=`) og har **"Afspil på tv'et"** og **"Afspil på telefonen"**. I
+  Android-app'en (3.1) åbner telefonens egen afspiller `http://192.168.1.85:8097/fil/<sti>`
+  (`AndroidHost.aabnVideo`); i en browser er det et rigtigt link ("Afspil her"). En sæsonpakke
+  viser afsnittene som en liste. **Kun hjemme** — ude er der kun DR TV's eget link (torrents slet
+  ikke; det ville kræve en tunnel som Tailscale, og det er Allans valg). Erstatter
+  `playTorrentOnTv`, der hentede hele Torrents-listen og ledte på navnet.
+- **"Afspil på …"** (`Fjern.tsx`): i den store afspiller og i afsnittets pop-up, kun når HTPC kan
+  nås. Telefonen, **tv'et i stuen** og **Google Home-højttalerne** (soveværelset, køkkenet, Leas
+  værelse) fra `tv-helper` `/api/maal`. Et tryk på afsnittet spiller stadig straks på telefonen.
+  Mens det spiller et andet sted, ligger en blå **bjælke** over mini-afspilleren (pause direkte);
+  et tryk åbner **styringen**: tid, spoling, ±, lydstyrke, **"Fortsæt på telefonen"** (stopper
+  dér og spiller videre her fra samme sekund) og stop. `TvSession` har fået `maal`/`maalNavn`, og
+  `followTvSession` læser `fjern` fra `/api/status` (samme form for Kodi og en højttaler); en
+  højttaler, der spiller færdig, markerer afsnittet hørt.
+- **Tv'et i stuen får podcast-lyden gennem HTPC** (`/lyd/…` i `tv-helper`): Kodi hang i over to
+  minutter på DR's lydadresser og startede forfra. Nu: tv'et slukket hele natten → lyd ved 2:00
+  efter 21 s. Se `tv/README.md`.
+- **Notifikationer om nye afsnit med ★★★** (Android 3.1, WorkManager hvert kvarter): nyt endpoint
+  **`episodes.notify`** (`deviceId`, `minPriority` 0-2, `days`) med de uhørte afsnit fra de seneste
+  døgn, uden beskrivelser. Et tryk på notifikationen åbner afsnittet (`AndroidHost.ventendeAfsnit`
+  + `dkpod:afsnit`), "▶ Afspil" spiller det.
+- **App'en opdaterer sig selv** (3.1): `app/version.json` ved siden af APK'en; **`./deploy.sh app
+  <apk> <versionCode> <versionName> "<nyt>"`** lægger begge op (APK'en først). Banneret til ældre
+  app'er sammenligner nu hele versionen (`LATEST_APK = '3.1.0'`).
+- **Test:** `test/test_nyt.py` (31 tjek: alt ovenfor, også hele vejen med højttaleren i
+  soveværelset — lydstyrken højst 5 % og lagt tilbage bagefter, `test/lydstyrke.py`) og
+  `test_web.py` (27, en timing-fejl rettet: ✕ blev trykket, mens afspilleren gled op). Android:
+  `podcast-android/test/test_android.py ny` (21).
+
 ## 2026-11-16: afspilleren bliver, køen opdaterer sig, Stuen er en fane
 
 Udløst af tre ting fra Allan: (1) "kan det passe at den nogle gange ikke er opdateret?",
@@ -94,7 +143,7 @@ skulle huskes pr. enhed. Desuden er fjernbetjeningen fra `tv` (aogj.com/tv) nu e
 - **Mini-afspiller** i bunden (cover, titel, −10/▶/+30, tynd fremdriftsbjælke) og **stor
   afspiller** (`Spiller.tsx`) ved tryk: stort cover, spoling med resttid, **hastighed** (1 → 1,2 →
   1,5 → 1,75 → 2 → 0,8×, huskes pr. enhed), **sove-timer** (15/30/45/60/90 min, så fra),
-  "På tv'et", "Om afsnittet" og **✕ Luk afspilleren**. Den gamle grønne footer er væk.
+  "Afspil på …" (fra 17/11; før "På tv'et"), "Om afsnittet" og **✕ Luk afspilleren**.
 - **Slut på afsnit lukker afspilleren** (`closePlayer(false)`), så et færdigt afsnit ikke bliver
   hængende i notifikationen. Stadig ingen auto-videre.
 - `window.__dkPodLuk` = luk afspilleren — Android-app'ens notifikationsknap "Luk" kalder den.
@@ -130,6 +179,7 @@ spol, pause, stop, undertekster, lydspor og Denon'ens lydstyrke. **Virker kun hj
   på tv'et (tv og Denon tændes). Mens app'en er fremme, poller den status hvert 15. sek.
   (`TvSession`) og gemmer positionen på afsnittet; er det spillet over 97 %, markeres det hørt.
   Den lokale afspiller pauses først. **Afprøvning tænder det rigtige tv i stuen — spørg først.**
+  (Afprøvet med lov 17/11: lyden går nu gennem HTPC, se afsnittet om 17/11.)
 
 ### Udseende
 CSS-variabler og **mørkt tema** (`prefers-color-scheme`; i Android-app'en følger WebView'en app'ens
@@ -521,7 +571,7 @@ eksklusive). Løsning = **link-out** (besked om nye afsnit + "↗ åbn hos Podim
   **Note:** Podimo-afsnit uden `audio_url` kan ikke afspilles — kun link-out.
 
 ## Link-out UX + kilde-mærkater (2026-07-27)
-- **Kilde-mærkat** pr. afsnit (App.tsx `sourceOf`): udledt af lyd-/link-domænet (Podimo/DR/Acast/
+- **Kilde-mærkat** pr. afsnit (App.tsx `sourceOf`) — fra 17/11 kun på afsnit, der ikke kan spilles i app'en: udledt af lyd-/link-domænet (Podimo/DR/Acast/
   Omny/Megaphone/…). Vist som farvet chip (`.src`, Podimo lilla, DR blå).
 - **VIGTIG Android-faldgrube:** i en **installeret PWA (standalone) på Android blokeres
   `window.open(url,'_blank')`** — derfor "skete der ikke noget" når man trykkede afspil på et
@@ -785,7 +835,7 @@ var et bevidst valg, fordi qBittorrent ikke gemmer hvilken regel en torrent kom 
 - **Visning:** navnet vises med mellemrum i stedet for punktummer (`torrentTitle()` i api.ts;
   `DDP5.1`/`v1.16` bevares), størrelse + "på HTPC", ingen ▶/↗ og intet link. ✓ hedder "Set"
   og gemmes i `podcast_episode_state` som et afsnit (`episode_id = rss_stable_id('torrent:'+hash)`).
-- **Torrent har stjerner (1-3) men kan ikke fjernes.** Et fast kort øverst i Favoritter (kun med
+- **Torrent har stjerner (1-3) men kan ikke fjernes.** (Fra 17/11 nederst og også uden koden.) Et fast kort øverst i Favoritter (kun med
   koden) med stjerner og uden Slet/Følg; et tryk på kortet viser torrents i køen. Ét fælles
   antal for alle torrents, gemt pr. enhed i **`podcast_torrent_prefs`** (priority 0-2) bag samme
   token (`torrent.setPriority`, `torrents.list` svarer med `priority`). **Ikke** en række i
