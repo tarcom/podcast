@@ -63,6 +63,18 @@ def knap(selector, tekst):
     return next(b for b in d.find_elements(By.CSS_SELECTOR, selector) if tekst in b.text)
 
 
+def tryk(el):
+    # midt på skærmen først — ellers ligger knappen under bundmenuen
+    js("arguments[0].scrollIntoView({block: 'center'})", el)
+    time.sleep(0.3)
+    el.click()
+
+
+def sonos_kort(coord=None):
+    sel = '.lyd-kort.sonos' + (f'[data-coord="{coord}"]' if coord else '')
+    return d.find_elements(By.CSS_SELECTOR, sel)
+
+
 try:
     foer = lyd()
     g0 = foer['sonos']['groups']
@@ -78,8 +90,8 @@ try:
     time.sleep(1.5)
     d.save_screenshot(os.path.join(SHOTS, '40-lyd.png'))
 
-    sonos_kort = d.find_elements(By.CSS_SELECTOR, '.lyd-kort:not(.radio)')
-    tekst = sonos_kort[0].text if sonos_kort else ''
+    alle = sonos_kort()
+    tekst = ' '.join(k.text for k in alle)
     ok('Soveværelse' in tekst or 'Køkken' in tekst or 'Stue' in tekst, f'Sonos-kortet viser rummene: {tekst.splitlines()[:2]}')
     rum = [b.text for b in d.find_elements(By.CSS_SELECTOR, '.lyd-chips')[0].find_elements(By.CSS_SELECTOR, 'button')]
     ok(len(rum) >= 3, f'rummene: {rum}')
@@ -89,32 +101,36 @@ try:
     kanaler = [b.text for b in d.find_elements(By.CSS_SELECTOR, '.lyd-kort.radio .qchip')]
     ok('Denon' in radio and len(kanaler) == 6, f'radioen: {radio.splitlines()[:2]}, kanaler {kanaler}')
 
-    # --- lydløst: et rum ud af gruppen og ind igen ---
-    g = next((g for g in g0 if len(g['members']) > 1), None)
+    # --- lydløst: et rum ud af gruppen og ind igen (kun en gruppe, der ikke spiller) ---
+    g = next((g for g in g0 if len(g['members']) > 1 and g['state'] != 'PLAYING'), None)
+    n0 = len(sonos_kort())
     if g:
         ud = g['members'][-1]
         navn = {'Kokken': 'Køkken', 'Sove': 'Soveværelse'}.get(ud, ud)
-        knap('.lyd-chips button', navn).click()
+        if g['coord'] != (foer['sonos']['active'] or {}).get('coord'):
+            g = None  # rum-knapperne gælder den aktive gruppe; den er ikke denne
+    if g:
+        tryk(knap('.lyd-chips button', navn))
         skilt = wait(lambda: not any(ud in x['members'] and x['coord'] == g['coord'] for x in lyd()['sonos']['groups']), 15, 1)
         ok(skilt, f'{navn} er taget ud af gruppen')
-        ok(wait(lambda: len(d.find_elements(By.CSS_SELECTOR, '.lyd-kort:not(.radio)')) == 2, 10), 'og står nu som sin egen gruppe')
-        knap('.lyd-chips button', navn).click()
+        ok(wait(lambda: len(sonos_kort()) == n0 + 1, 10), 'og står nu som sin egen gruppe')
+        tryk(knap('.lyd-chips button', navn))
         samlet = wait(lambda: any(set(x['members']) == set(g['members']) for x in lyd()['sonos']['groups']), 15, 1)
         ok(samlet, f'og sat ind igen: {[(x["coord"], x["members"]) for x in lyd()["sonos"]["groups"]]}')
-        wait(lambda: len(d.find_elements(By.CSS_SELECTOR, '.lyd-kort:not(.radio)')) == 1, 10)
+        wait(lambda: len(sonos_kort()) == n0, 10)
 
     # --- lydløst: Sonos-lydstyrken op og tilbage (kun når gruppen er stoppet) ---
     gruppe = next((x for x in lyd()['sonos']['groups'] if len(x['members']) > 1), lyd()['sonos']['groups'][0])
     if gruppe['state'] != 'PLAYING':
         v0 = int(gruppe['volume'])
-        kort0 = d.find_elements(By.CSS_SELECTOR, '.lyd-kort:not(.radio)')[0]
-        kort0.find_elements(By.CSS_SELECTOR, '.lyd-skru')[1].click()
+        kort0 = sonos_kort(gruppe['coord'])[0]
+        tryk(kort0.find_elements(By.CSS_SELECTOR, '.lyd-skru')[1])
         vist = kort0.find_element(By.CSS_SELECTOR, '.lyd-niveau b').text
         ok(vist == str(v0 + 2), f'+ viser den nye lydstyrke med det samme ({v0} -> {vist})')
         ok(wait(lambda: int(next(x for x in lyd()['sonos']['groups'] if x['coord'] == gruppe['coord'])['volume']) == v0 + 2, 10, 1),
            'og Sonos er skruet op')
-        kort0 = d.find_elements(By.CSS_SELECTOR, '.lyd-kort:not(.radio)')[0]
-        kort0.find_elements(By.CSS_SELECTOR, '.lyd-skru')[0].click()
+        kort0 = sonos_kort(gruppe['coord'])[0]
+        tryk(kort0.find_elements(By.CSS_SELECTOR, '.lyd-skru')[0])
         ok(wait(lambda: int(next(x for x in lyd()['sonos']['groups'] if x['coord'] == gruppe['coord'])['volume']) == v0, 10, 1),
            f'− skruer tilbage til {v0}')
 
@@ -122,14 +138,46 @@ try:
     r0 = lyd()['radio'].get('lydstyrke')
     if r0 is not None:
         rk = d.find_element(By.CSS_SELECTOR, '.lyd-kort.radio')
-        rk.find_elements(By.CSS_SELECTOR, '.lyd-skru')[1].click()
+        tryk(rk.find_elements(By.CSS_SELECTOR, '.lyd-skru')[1])
         ok(wait(lambda: lyd()['radio'].get('lydstyrke') == r0 + 1, 10, 1), f'radioen: + ({r0} -> {r0 + 1})')
-        rk.find_elements(By.CSS_SELECTOR, '.lyd-skru')[0].click()
+        tryk(rk.find_elements(By.CSS_SELECTOR, '.lyd-skru')[0])
         ok(wait(lambda: lyd()['radio'].get('lydstyrke') == r0, 10, 1), f'og − tilbage til {r0}')
+
+    # --- spaen (den gamle S1-forstærker): kortet, timeren og lydstyrken ---
+    sp0 = lyd().get('spa') or {}
+    spa = wait(lambda: d.find_element(By.CSS_SELECTOR, '.lyd-kort.spa'), 10)
+    ok(spa, 'spaen har sit eget kort (det tredje)')
+    if spa and sp0.get('spiller') is not None:
+        tekst = spa.text
+        chips = [b.text for b in spa.find_elements(By.CSS_SELECTOR, '.qchip')]
+        ok(all(v in chips for v in ('30 min', '1 t', '2 t', '3 t', '4 t')) and 'DR P4 Nordjylland' in chips,
+           f'sluk-timer og favoritter: {chips[:6]}')
+        valgt = [b.text for b in spa.find_elements(By.CSS_SELECTOR, '.qchip.on')]
+        ok(f"{sp0['minutter'] // 60} t" in valgt or f"{sp0['minutter']} min" in valgt, f'den valgte længde er tændt: {valgt}')
+        if sp0.get('spiller'):
+            ok('slukker kl.' in tekst, f"viser hvornår den slukker: {[l for l in tekst.splitlines() if 'slukker' in l]}")
+            m0 = sp0['minutter']
+            andet = 180 if m0 != 180 else 240
+            navn = {180: '3 t', 240: '4 t'}[andet]
+            tryk(next(b for b in spa.find_elements(By.CSS_SELECTOR, '.qchip') if b.text == navn))
+            ok(wait(lambda: abs((lyd()['spa'].get('sluk_om') or 0) - andet * 60) < 120, 10, 1), f'{navn}: forstærkerens timer følger med')
+            tilbage = {30: '30 min', 60: '1 t', 120: '2 t', 180: '3 t', 240: '4 t'}[m0]
+            spa = d.find_element(By.CSS_SELECTOR, '.lyd-kort.spa')
+            tryk(next(b for b in spa.find_elements(By.CSS_SELECTOR, '.qchip') if b.text == tilbage))
+            ok(wait(lambda: lyd()['spa'].get('minutter') == m0, 10, 1), f'og tilbage til {tilbage}')
+        v0 = sp0.get('lydstyrke')
+        if v0 is not None:
+            spa = d.find_element(By.CSS_SELECTOR, '.lyd-kort.spa')
+            tryk(spa.find_elements(By.CSS_SELECTOR, '.lyd-skru')[1])
+            ok(wait(lambda: lyd()['spa'].get('lydstyrke') == v0 + 2, 10, 1), f'spaen: + ({v0} -> {v0 + 2})')
+            tryk(spa.find_elements(By.CSS_SELECTOR, '.lyd-skru')[0])
+            ok(wait(lambda: lyd()['spa'].get('lydstyrke') == v0, 10, 1), f'og − tilbage til {v0}')
+        d.save_screenshot(os.path.join(SHOTS, '41-lyd-spa.png'))
 
     efter = lyd()
     ok([sorted(x['members']) for x in efter['sonos']['groups']] == [sorted(x['members']) for x in g0]
-       and efter['radio'].get('spiller') == foer['radio'].get('spiller'), 'alt står som før testen')
+       and efter['radio'].get('spiller') == foer['radio'].get('spiller')
+       and (efter.get('spa') or {}).get('spiller') == (foer.get('spa') or {}).get('spiller'), 'alt står som før testen')
     fejl = [e for e in d.get_log('browser') if e['level'] == 'SEVERE' and '192.168' not in e['message']]
     ok(not fejl, f'ingen fejl i konsollen ({[e["message"][:120] for e in fejl]})')
 finally:

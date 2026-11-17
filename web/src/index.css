@@ -353,6 +353,12 @@ button:disabled { opacity: 0.55; cursor: default; }
 .lyd-chips .qchip:disabled { opacity: 0.5; cursor: default; }
 .lyd-besked { background: var(--ink); color: var(--bg); border-radius: 12px; padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
 .lyd-fejl { font-size: 12px; color: var(--muted); margin-top: 10px; text-align: center; }
+.lyd-kort.spa.spiller { border-color: var(--terracotta); box-shadow: inset 3px 0 0 var(--terracotta); }
+.lyd-noimg.spa { color: var(--terracotta); background: rgba(208, 95, 45, 0.12); }
+.lyd-kort.spa .lyd-chips .qchip.on { background: var(--terracotta); border-color: var(--terracotta); color: #fff; }
+.lyd-label.midt { text-align: center; margin: 12px 0 0; }
+/* Favoritnavnene kan være lange ("Best Spinning Music 2026 ♫ Electronic …") */
+.lyd-chips .qchip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* link-out pop-up (Podimo/DR: kan ikke afspilles i appen) */
 .linkout { margin: 4px 0 14px; padding: 14px; border-radius: 14px; background: var(--surface-3); border: 1px solid var(--line); }

@@ -152,3 +152,10 @@ export const IkonNaeste = ({ size = 22, className }: P) =>
     <path d="M18 5v14" />
     <path d="M5 5.5v13L15 12z" fill="currentColor" stroke="none" />
   </>)
+
+// Spaen: et kar med damp
+export const IkonSpa = ({ size = 22, className }: P) =>
+  svg(size, className, <>
+    <path d="M3 13h18v3a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" />
+    <path d="M8 9.5c-1-1 1-2 0-3.5M12 9.5c-1-1 1-2 0-3.5M16 9.5c-1-1 1-2 0-3.5" />
+  </>)

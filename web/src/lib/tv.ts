@@ -230,7 +230,22 @@ export type RadioStatus = {
   travl?: boolean
   fejl?: string | null
 }
-export type LydStatus = { sonos: SonosStatus; radio: RadioStatus }
+/** Spaen: den gamle Sonos-forstærker (S1) ved udespaen, styret direkte af tv-helper. */
+export type SpaStatus = {
+  spiller?: boolean
+  tilstand?: string
+  kilde?: string | null // favoritten (radio), eller den app'en startede (playliste)
+  nummer?: string | null // "nummer – kunstner"
+  lydstyrke?: number | null
+  sluk_om?: number | null // sekunder, til sleep-timeren slukker
+  minutter: number // timerens længde
+  valg: number[]
+  favorit?: string // ▶ spiller den
+  favoritter?: string[]
+  travl?: boolean
+  fejl?: string
+}
+export type LydStatus = { sonos: SonosStatus; radio: RadioStatus; spa?: SpaStatus }
 
 export const lydStatus = () => kald<LydStatus>('GET', '/api/lyd', undefined, 15000)
 export const sonosKommando = (kommando: string, felter: Record<string, string | number> = {}) =>
@@ -240,3 +255,6 @@ export const sonosCover = (rooms: string) =>
 /** Start og stop svarer med det samme; om radioen spiller, ses i lydStatus(). */
 export const radioKommando = (handling: string, kanal?: string) =>
   kald<{ ok: boolean; lydstyrke?: number }>('POST', '/api/radio', kanal ? { handling, kanal } : { handling })
+/** Spaen: "spil" (favorit, minutter), "stop", "lyd_op", "lyd_ned", "timer" (minutter). */
+export const spaKommando = (handling: string, ekstra: Record<string, string | number> = {}) =>
+  kald<{ ok: boolean; lydstyrke?: number }>('POST', '/api/spa', { handling, ...ekstra }, 20000)

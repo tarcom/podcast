@@ -1,3 +1,6 @@
+// Spaen (den gamle S1-forstærker ved udespaen) er det tredje kort: favoritter, lydstyrke og en
+// sluk-timer, som er forstærkerens egen (tv-helper sørger for, at den altid er sat).
+//
 // Lyd (2026-11-17): Sonos i huset og radioen på Denon'en i stuen — det samme som Allans genveje
 // på BOOK6 (sonos-tray: ▶/⏸, −, + og radioikonet), som fane i app'en. Sonos går gennem
 // sonos_helper på HTPC (grupper, favoritter og playlister), radioen er HEOS på Denon'en; begge
@@ -6,12 +9,13 @@
 // Siden henter tilstanden hvert 3. sekund, mens fanen er åben (hvert sekund, mens den venter på,
 // at et tryk slår igennem — Denon'en er op til 20 s om at tænde og starte en strøm).
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { IkonForrige, IkonHoejttaler, IkonNaeste, IkonPause, IkonPlay, IkonRadio, IkonStop } from './ikoner'
+import { IkonForrige, IkonHoejttaler, IkonNaeste, IkonPause, IkonPlay, IkonRadio, IkonSpa, IkonStop } from './ikoner'
 import {
   lydStatus,
   radioKommando,
   sonosCover,
   sonosKommando,
+  spaKommando,
   TvUnreachable,
   type LydStatus,
   type SonosGruppe,
@@ -32,6 +36,16 @@ function pyntTitel(t?: string): string {
   if (!s || /^x-|^https?:/.test(s)) return 'Intet valgt'
   return s
 }
+function varighed(min: number): string {
+  return min < 60 ? `${min} min` : `${min / 60} t`
+}
+function klokken(ms: number): string {
+  return new Date(ms).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })
+}
+function omTid(sek: number): string {
+  const m = Math.max(1, Math.round(sek / 60))
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} t ${m % 60} min`
+}
 const spiller = (g: SonosGruppe) => g.state === 'PLAYING' || g.state === 'TRANSITIONING'
 function tilstandTekst(state: string): string {
   if (state === 'PLAYING') return 'spiller'
@@ -45,6 +59,7 @@ type Venter = { noegle: string; opfyldt: (s: LydStatus) => boolean; siden: numbe
 
 export default function Lyd({ aktiv }: { aktiv: boolean }) {
   const [st, setSt] = useState<LydStatus | null>(null)
+  const [hentet, setHentet] = useState(0) // hvornår st blev hentet (sluk-tidspunktet regnes herfra)
   const [naas, setNaas] = useState<'ukendt' | 'ok' | 'ude'>('ukendt')
   const [venter, setVenter] = useState<Venter | null>(null)
   const venterRef = useRef<Venter | null>(null)
@@ -68,6 +83,7 @@ export default function Lyd({ aktiv }: { aktiv: boolean }) {
       return
     }
     setSt(s)
+    setHentet(Date.now())
     setNaas('ok')
     if (ryd.current.size) {
       const vaek = new Set(ryd.current)
@@ -238,6 +254,26 @@ export default function Lyd({ aktiv }: { aktiv: boolean }) {
     [skru],
   )
 
+  // ---------- spaen ----------
+  const spa = useCallback(
+    async (handling: 'spil' | 'stop' | 'timer', ekstra: Record<string, string | number> = {}) => {
+      if (handling !== 'timer')
+        vent({ noegle: 'spa', opfyldt: (s) => !s.spa?.travl && !!s.spa?.spiller === (handling === 'spil') })
+      try {
+        await spaKommando(handling, ekstra)
+      } catch (e) {
+        vent(null)
+        fejl(e)
+      }
+      igen(500)
+    },
+    [vent, fejl, igen],
+  )
+  const spaSkru = useCallback(
+    (fra: number, delta: number) => skru('spa', fra, delta, 100, () => spaKommando(delta > 0 ? 'lyd_op' : 'lyd_ned')),
+    [skru],
+  )
+
   if (!aktiv) return null
 
   const s = st?.sonos
@@ -247,13 +283,15 @@ export default function Lyd({ aktiv }: { aktiv: boolean }) {
   const aktivGruppe = grupper.find((g) => g.coord === s?.active.coord) || grupper[0]
   const aktiveRum = aktivGruppe ? [aktivGruppe.coord, ...aktivGruppe.members.filter((x) => x !== aktivGruppe.coord)] : []
   const radioLyd = lyd.radio ?? r?.lydstyrke ?? null
+  const sp = st?.spa
+  const spaLyd = lyd.spa ?? sp?.lydstyrke ?? null
 
   return (
     <section className="panel lyd">
       <div className="panel-head">
         <div>
           <h2>Lyd</h2>
-          <p className="panel-sub">Sonos i huset og radioen i stuen</p>
+          <p className="panel-sub">Sonos i huset, radioen i stuen og spaen</p>
         </div>
       </div>
 
@@ -276,7 +314,7 @@ export default function Lyd({ aktiv }: { aktiv: boolean }) {
                 const v = lyd[noegle] ?? (g.volume === '' ? null : Number(g.volume))
                 const travl = venter?.noegle === noegle
                 return (
-                  <div key={g.coord} className={`lyd-kort ${spiller(g) ? 'spiller' : ''}`}>
+                  <div key={g.coord} className={`lyd-kort sonos ${spiller(g) ? 'spiller' : ''}`} data-coord={g.coord}>
                     <div className="lyd-top">
                       {c ? <img src={c} alt="" /> : <span className="lyd-noimg"><IkonHoejttaler size={26} /></span>}
                       <div className="lyd-tekst">
@@ -396,6 +434,73 @@ export default function Lyd({ aktiv }: { aktiv: boolean }) {
               ))}
             </div>
             {r.fejl && <p className="lyd-fejl">{r.spiller === undefined ? r.fejl : `Sidst gik det galt: ${r.fejl}`}</p>}
+          </div>
+        </>
+      )}
+
+      {sp && (
+        <>
+          <h3 className="lyd-hoved">
+            <IkonSpa size={18} /> Spaen
+          </h3>
+          <div className={`lyd-kort spa ${sp.spiller ? 'spiller' : ''}`}>
+            <div className="lyd-top">
+              <span className="lyd-noimg spa"><IkonSpa size={28} /></span>
+              <div className="lyd-tekst">
+                <b>{sp.spiller ? sp.kilde || sp.nummer || 'Spiller' : sp.spiller === undefined ? 'Forstærkeren svarer ikke' : 'Slukket'}</b>
+                <span>
+                  {venter?.noegle === 'spa'
+                    ? 'et øjeblik …'
+                    : sp.spiller
+                      ? [sp.kilde && sp.nummer ? sp.nummer : null, sp.sluk_om ? `slukker kl. ${klokken(hentet + sp.sluk_om * 1000)} (om ${omTid(sp.sluk_om)})` : null]
+                          .filter(Boolean)
+                          .join(' · ') || 'spiller'
+                      : sp.spiller === undefined
+                        ? sp.fejl
+                        : `▶ spiller ${sp.favorit}`}
+                </span>
+              </div>
+            </div>
+            {sp.spiller !== undefined && (
+              <>
+                <div className="lyd-knapper">
+                  <button className="lyd-skru" onClick={() => spaSkru(sp.lydstyrke ?? 0, -2)} aria-label="Skru ned">−</button>
+                  <button
+                    className="lyd-play"
+                    onClick={() => (sp.spiller ? spa('stop') : spa('spil', { favorit: sp.favorit || '', minutter: sp.minutter }))}
+                    disabled={venter?.noegle === 'spa'}
+                    aria-label={sp.spiller ? 'Sluk spaens musik' : 'Spil i spaen'}
+                  >
+                    {venter?.noegle === 'spa' ? <span className="spinner" aria-hidden="true" /> : sp.spiller ? <IkonStop size={24} /> : <IkonPlay size={28} />}
+                  </button>
+                  <button className="lyd-skru" onClick={() => spaSkru(sp.lydstyrke ?? 0, 2)} aria-label="Skru op">+</button>
+                </div>
+                <div className="lyd-niveau">
+                  Lydstyrke <b>{spaLyd ?? '–'}</b>
+                </div>
+                <p className="lyd-label midt">Sluk efter</p>
+                <div className="lyd-chips">
+                  {(sp.valg || []).map((m) => (
+                    <button key={m} className={`qchip ${m === sp.minutter ? 'on' : ''}`} onClick={() => spa('timer', { minutter: m })}>
+                      {varighed(m)}
+                    </button>
+                  ))}
+                </div>
+                <div className="lyd-chips">
+                  {(sp.favoritter || []).map((f) => (
+                    <button
+                      key={f}
+                      className={`qchip ${sp.spiller && sp.kilde === f ? 'on' : ''}`}
+                      onClick={() => spa('spil', { favorit: f, minutter: sp.minutter })}
+                      disabled={venter?.noegle === 'spa'}
+                      title={f}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </>
       )}
