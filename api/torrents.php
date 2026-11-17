@@ -111,7 +111,7 @@ function torrent_list(array $config, string $deviceId): never
     }
     $pdo = db($config);
     $stmt = $pdo->prepare(
-        'SELECT t.episode_id, t.name, t.size_bytes, t.completed_at, s.played_at
+        'SELECT t.episode_id, t.hash, t.name, t.size_bytes, t.completed_at, s.played_at
          FROM podcast_torrents t
          LEFT JOIN podcast_episode_state s ON s.device_id = :dev AND s.episode_id = t.episode_id
          ORDER BY t.completed_at DESC

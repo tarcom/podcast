@@ -366,6 +366,32 @@ try {
             $pdo = db($config);
             json_response(['status' => true, 'items' => podcast_newest_episodes($pdo, $deviceId)]);
 
+        // Til Android-app'ens notifikationer om nye afsnit (2026-11-17): de uhørte afsnit fra de
+        // seneste `days` døgn i podcasts med mindst `minPriority` stjerner (0-2 = ★ til ★★★, som
+        // favorites.priority). Uden beskrivelser, så app'en kan spørge hvert kvarter uden at
+        // bruge data af betydning. Hvad der allerede ER vist, husker app'en selv.
+        case 'episodes.notify':
+            $deviceId = $deviceFromGet();
+            $minPrio = max(0, min(2, (int) ($_GET['minPriority'] ?? 2)));
+            $days = max(1, min(14, (int) ($_GET['days'] ?? 3)));
+            $pdo = db($config);
+            $stmt = $pdo->prepare(
+                "SELECT e.feed_id, e.episode_id, e.title, e.published_at, e.image,
+                        (e.audio_url IS NOT NULL AND e.audio_url <> '') AS playable,
+                        f.title AS podcast_title, f.image AS podcast_image, f.priority
+                 FROM podcast_episodes e
+                 JOIN podcast_favorites f ON f.feed_id = e.feed_id AND f.device_id = :dev
+                 LEFT JOIN podcast_episode_state st ON st.device_id = :dev2 AND st.episode_id = e.episode_id
+                 WHERE f.priority >= :prio AND e.published_at >= :since AND e.published_at <= :nu
+                   AND st.played_at IS NULL
+                 ORDER BY e.published_at DESC
+                 LIMIT 30"
+            );
+            $now = time();
+            $stmt->execute(['dev' => $deviceId, 'dev2' => $deviceId, 'prio' => $minPrio,
+                            'since' => $now - $days * 86400, 'nu' => $now + 600]);
+            json_response(['status' => true, 'items' => $stmt->fetchAll()]);
+
         // Ét afsnits beskrivelse. Køen sender ikke beskrivelser med for HØRTE afsnit (de er
         // flertallet af rækkerne og ~halvdelen af payloaden), så "læs mere" på et hørt afsnit
         // henter teksten her — ét PK-opslag, kun når pop-up'en faktisk åbnes.
