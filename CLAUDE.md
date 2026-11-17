@@ -59,6 +59,11 @@ er lette at snuble over.
   sekund, kun mens den er åben og app'en fremme. `test/test_lyd.py`: 16 tjek med kun lydløse
   handlinger (rum ud/ind, lydstyrke op og tilbage); radioens start/stop er afprøvet mod en falsk
   Denon (`tv/htpc/test_radio.py`), fordi den rigtige spillede i stuen.
+- **Spaen** er fanens tredje kort: den gamle Sonos-forstærker (S1) ved udespaen, styret direkte
+  af `tv-helper` (`/api/spa`), aldrig gennem `sonos_helper`, så husets S2-Sonos ikke kan rammes.
+  Forstærkerens egne favoritter (DR P4 Nordjylland først), lydstyrke og **"Sluk efter"** (30 min-
+  4 t, forvalg 2 t): forstærkerens egen sleep-timer, som HTPC altid sætter, også når musikken er
+  startet fra den gamle S1-app. `test_lyd.py` (21 tjek) rører kun ting, der ikke spiller.
 - **"Afspil på tv'et" for en torrent fejlede** ("Kunne ikke starte afspilningen"): pop-up'en
   sendte torrentens *mappe* (`fund.sti`) i stedet for videoen (`fund.afspil`), og `tv-helper`
   svarede "ukendt fil". Telefonen brugte filens adresse og virkede. Rettet begge steder: siden
