@@ -315,6 +315,45 @@ button:disabled { opacity: 0.55; cursor: default; }
 .ep-thumb .ep-noimg.torrent { display: flex; align-items: center; justify-content: center; font-size: 24px;
   background: linear-gradient(135deg, #7b5aa8, #4a2f73); }
 
+/* ---- fanen Lyd: Sonos og radioen i stuen (Lyd.tsx) ---- */
+.banner.warn { background: var(--surface-3); border-color: var(--line); }
+.lyd-hoved { display: flex; align-items: center; gap: 8px; font-family: 'Fraunces', serif; font-size: 18px; color: var(--heading); margin: 18px 0 8px; }
+.lyd-hoved:first-of-type { margin-top: 4px; }
+.lyd-hoved svg { color: var(--moss); }
+.lyd-kort { border: 1px solid var(--line); border-radius: 18px; background: var(--surface-2); padding: 14px; margin-bottom: 10px; }
+.lyd-kort.spiller { border-color: var(--moss); box-shadow: inset 3px 0 0 var(--moss); }
+.lyd-kort.radio.spiller { border-color: var(--tv); box-shadow: inset 3px 0 0 var(--tv); }
+.lyd-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.lyd-top img, .lyd-noimg { width: 64px; height: 64px; border-radius: 12px; object-fit: cover; flex: none; background: var(--surface-3); }
+.lyd-noimg { display: grid; place-items: center; color: var(--moss); background: var(--moss-soft); }
+.lyd-noimg.radio { color: var(--tv); background: var(--tv-soft); }
+.lyd-tekst { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lyd-tekst b { font-size: 16px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lyd-tekst span { font-size: 13px; color: var(--muted); }
+.lyd-knapper { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 14px 0 4px; }
+.lyd-play { width: 64px; height: 64px; border-radius: 50%; border: none; background: var(--terracotta); color: #fff; cursor: pointer;
+  display: grid; place-items: center; box-shadow: 0 6px 18px rgba(208, 95, 45, 0.3); }
+.lyd-kort.radio .lyd-play { background: var(--tv); box-shadow: 0 6px 18px rgba(26, 95, 180, 0.28); }
+.lyd-play:active { transform: scale(0.96); }
+.lyd-play:disabled { opacity: 0.85; cursor: default; }
+.lyd-play .spinner { width: 24px; height: 24px; border-color: rgba(255, 255, 255, 0.35); border-top-color: #fff; }
+.lyd-skru { width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  font-size: 26px; font-weight: 700; line-height: 1; cursor: pointer; display: grid; place-items: center; }
+.lyd-skru:active { background: var(--moss-soft); }
+.lyd-lille { width: 42px; height: 42px; border-radius: 50%; border: none; background: none; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+.lyd-lille:active { background: var(--surface-3); }
+.lyd-niveau { text-align: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lyd-niveau b { color: var(--ink); }
+.lyd-label { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 14px 0 6px; }
+.lyd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.lyd-kort .lyd-chips { margin-top: 12px; justify-content: center; }
+.lyd-chips .qchip { font-size: 14px; }
+.lyd-chips .qchip.on { background: var(--moss); border-color: var(--moss); color: var(--on-accent); }
+.lyd-kort.radio .lyd-chips .qchip.on { background: var(--tv); border-color: var(--tv); color: #fff; }
+.lyd-chips .qchip:disabled { opacity: 0.5; cursor: default; }
+.lyd-besked { background: var(--ink); color: var(--bg); border-radius: 12px; padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
+.lyd-fejl { font-size: 12px; color: var(--muted); margin-top: 10px; text-align: center; }
+
 /* link-out pop-up (Podimo/DR: kan ikke afspilles i appen) */
 .linkout { margin: 4px 0 14px; padding: 14px; border-radius: 14px; background: var(--surface-3); border: 1px solid var(--line); }
 .linkout-msg { font-size: 14px; color: var(--ink); line-height: 1.5; margin: 0 0 12px; }

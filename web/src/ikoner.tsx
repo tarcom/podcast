@@ -132,3 +132,23 @@ export const IkonTelefon = ({ size = 22, className }: P) =>
     <rect x="7" y="2.5" width="10" height="19" rx="2.5" />
     <path d="M11 18.5h2" />
   </>)
+
+export const IkonRadio = ({ size = 22, className }: P) =>
+  svg(size, className, <>
+    <rect x="3" y="8" width="18" height="12" rx="2.5" />
+    <path d="M7 8l10-4.5" />
+    <circle cx="15.5" cy="14" r="2.5" />
+    <path d="M6.5 12.5h4M6.5 15.5h4" />
+  </>)
+
+export const IkonForrige = ({ size = 22, className }: P) =>
+  svg(size, className, <>
+    <path d="M6 5v14" />
+    <path d="M19 5.5v13L9 12z" fill="currentColor" stroke="none" />
+  </>)
+
+export const IkonNaeste = ({ size = 22, className }: P) =>
+  svg(size, className, <>
+    <path d="M18 5v14" />
+    <path d="M5 5.5v13L15 12z" fill="currentColor" stroke="none" />
+  </>)

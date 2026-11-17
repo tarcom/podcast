@@ -70,9 +70,11 @@ import { FuldSpiller, MiniSpiller } from './Spiller'
 import { FjernSpiller, FjernTid, MaalVaelger } from './Fjern'
 import { fmtClock } from './lib/format'
 import Stuen from './Stuen'
+import Lyd from './Lyd'
 import {
   IkonCast,
   IkonHentet,
+  IkonHoejttaler,
   IkonKoe,
   IkonOpdater,
   IkonPause,
@@ -83,7 +85,7 @@ import {
   IkonUdforsk,
 } from './ikoner'
 
-type Tab = 'explore' | 'favorites' | 'queue' | 'downloads' | 'stuen'
+type Tab = 'explore' | 'favorites' | 'queue' | 'downloads' | 'stuen' | 'lyd'
 type DlState = 'idle' | 'queued' | 'busy' | 'done' | 'error'
 type LangMode = 'da-first' | 'da-only' | 'all'
 type Reach = 'ukendt' | 'ok' | 'ude'
@@ -1940,6 +1942,8 @@ export default function App() {
     ...(canDownload ? [{ key: 'downloads' as Tab, label: 'Hentet', icon: <IkonHentet />, badge: downloads.length }] : []),
     { key: 'explore', label: 'Udforsk', icon: <IkonUdforsk /> },
     { key: 'stuen', label: 'Stuen', icon: <IkonTv /> },
+    // Sonos og radioen i stuen — Allans genveje fra BOOK6 (sonos-tray), 2026-11-17
+    { key: 'lyd', label: 'Lyd', icon: <IkonHoejttaler /> },
   ]
 
   // Opslaget på HTPC for netop det afsnit, pop-up'en viser (video: torrent eller DR TV)
@@ -2294,6 +2298,8 @@ export default function App() {
           pollSnart={pollTvSoon}
         />
       )}
+
+      {tab === 'lyd' && <Lyd aktiv />}
 
       {openPodcast && (
         <div className="modal" onClick={() => setOpenPodcast(null)}>

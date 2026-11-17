@@ -198,3 +198,45 @@ export function tvStr(b?: number): string {
   if (!b) return ''
   return b >= 1e9 ? (b / 1e9).toLocaleString('da-DK', { maximumFractionDigits: 1 }) + ' GB' : Math.round(b / 1e6) + ' MB'
 }
+
+// ---------- fanen Lyd: Sonos og radioen i stuen ----------
+// tv-helper sender Sonos videre til sonos_helper på HTPC (samme som CYD-boardene, aogj.com/sonos
+// og sonos-tray på BOOK6) og styrer selv radioen på Denon'en med HEOS — det, der før kun var
+// sonos-tray's radioikon. Samme vej som Stuen, så det også virker i Android-app'en.
+export type SonosGruppe = {
+  coord: string
+  members: string[]
+  state: string // PLAYING, PAUSED_PLAYBACK, STOPPED, TRANSITIONING
+  title?: string
+  title_utf8?: string
+  volume: string | number
+}
+export type SonosStatus = {
+  online: Record<string, boolean>
+  favorites: string[]
+  groups: SonosGruppe[]
+  active: { rooms: string; coord: string; state: string; title: string; volume: string | number }
+  fejl?: string
+}
+export type RadioStatus = {
+  spiller?: boolean
+  heos?: string
+  station?: string | null
+  kanal: string
+  kanaler: string[]
+  indgang?: string
+  lydstyrke?: number | null
+  tv?: boolean
+  travl?: boolean
+  fejl?: string | null
+}
+export type LydStatus = { sonos: SonosStatus; radio: RadioStatus }
+
+export const lydStatus = () => kald<LydStatus>('GET', '/api/lyd', undefined, 15000)
+export const sonosKommando = (kommando: string, felter: Record<string, string | number> = {}) =>
+  kald<{ ok?: boolean }>('POST', '/api/sonos', { kommando, ...felter }, 20000)
+export const sonosCover = (rooms: string) =>
+  kald<{ data: string | null }>('GET', `/api/sonos/cover?rooms=${encodeURIComponent(rooms)}`, undefined, 15000)
+/** Start og stop svarer med det samme; om radioen spiller, ses i lydStatus(). */
+export const radioKommando = (handling: string, kanal?: string) =>
+  kald<{ ok: boolean; lydstyrke?: number }>('POST', '/api/radio', kanal ? { handling, kanal } : { handling })

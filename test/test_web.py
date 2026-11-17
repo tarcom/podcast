@@ -73,7 +73,7 @@ try:
     ok(n and n > 50, f'køen er tegnet ({n} afsnit)')
     nav = d.find_element(By.CSS_SELECTOR, 'nav.tabs')
     ok(js("return getComputedStyle(arguments[0]).position", nav) == 'fixed', 'fanerne ligger fast i bunden på mobil')
-    ok(len(d.find_elements(By.CSS_SELECTOR, 'nav.tabs button')) == 5, 'fem faner: Kø, Favoritter, Hentet, Udforsk, Stuen')
+    ok(len(d.find_elements(By.CSS_SELECTOR, 'nav.tabs button')) == 6, 'seks faner: Kø, Favoritter, Hentet, Udforsk, Stuen, Lyd')
     time.sleep(1.5)
     shot('01-koe-lys')
 
