@@ -1609,7 +1609,11 @@ export default function App() {
       try {
         await tvAfspil(v.sti)
       } catch (e) {
-        showToast(e instanceof TvUnreachable ? "Tv'et kan kun nås hjemme på wifi'en" : 'Kunne ikke starte afspilningen')
+        showToast(
+          e instanceof TvUnreachable
+            ? "Tv'et kan kun nås hjemme på wifi'en"
+            : `Kunne ikke starte afspilningen${e instanceof Error && e.message ? ': ' + e.message : ''}`,
+        )
         return
       }
       setOpenEpisode(null)
@@ -2389,7 +2393,9 @@ export default function App() {
                     </ul>
                   ) : (
                     <div className="video-valg">
-                      <button className="linkout-btn" onClick={() => playVideoOnTv(videoNu.fund!)}>
+                      {/* Videofilen, ikke mappen: fund.sti er torrentens mappe (17/11 sendte den mappen,
+                          og tv'et svarede "ukendt fil") */}
+                      <button className="linkout-btn" onClick={() => playVideoOnTv({ ...videoNu.fund!, sti: videoNu.fund!.afspil || videoNu.fund!.sti })}>
                         <IkonTv size={18} /> Afspil på tv'et
                       </button>
                       {phoneVideo(videoNu.fund, 'linkout-btn alt')}

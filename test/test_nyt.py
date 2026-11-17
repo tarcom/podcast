@@ -200,6 +200,21 @@ try:
         v = wait(lambda: d.find_element(By.CSS_SELECTOR, '.linkout.video .video-valg, .linkout.video .video-filer'), 15)
         ok(v, f'en torrent: pop-up med tv og telefon ({v.get_attribute("class") if v else "intet"})')
         shot('25-torrent-video')
+        if v and 'video-valg' in v.get_attribute('class'):
+            # "Afspil på tv'et" — uden at tænde tv'et: kaldet fanges i siden, og vi ser efter, at det
+            # er en FIL på HTPC (17/11 sendte den mappen, og tv'et svarede "ukendt fil")
+            js("""window.__afspilKrop = null; var f = window.fetch; window.__fetch = f;
+                  window.fetch = function (u, o) { if (String(u).indexOf('/api/afspil') >= 0) { window.__afspilKrop = o && o.body;
+                    return Promise.resolve(new Response('{"ok": true}', {status: 200, headers: {'Content-Type': 'application/json'}})); }
+                    return f.apply(this, arguments); }""")
+            d.find_element(By.CSS_SELECTOR, '.video-valg .linkout-btn:not(.alt)').click()
+            krop = wait(lambda: js("return window.__afspilKrop"), 5)
+            js("window.fetch = window.__fetch")
+            sti = json.loads(krop)['sti'] if krop else ''
+            fil = subprocess.run(['ssh', 'htpc', f'test -f "/mnt/kodi/{sti}" && echo fil'], capture_output=True, text=True).stdout.strip()
+            ok(fil == 'fil', f"\"Afspil på tv'et\" sender videofilen, ikke mappen ({sti[-50:]})")
+            js("var b = Array.from(document.querySelectorAll('nav.tabs button')).find(function (x) { return x.textContent.indexOf('Kø') >= 0 }); if (b) b.click()")
+            time.sleep(0.5)
         luk_modal()
 
     if '--uden-cast' in sys.argv:
