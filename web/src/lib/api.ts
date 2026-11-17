@@ -198,6 +198,7 @@ export async function listTorrents(deviceId: string, token: string): Promise<{ i
       kind: 'torrent' as const,
       sizeBytes: n(r.size_bytes),
       rawName: s(r.name),
+      hash: s(r.hash),
     }))
     return { items, stars }
   } catch (e) {

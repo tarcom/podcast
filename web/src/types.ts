@@ -30,6 +30,7 @@ export type EpisodeRow = {
   kind?: 'torrent' // hentet af qBittorrent på HTPC (listTorrents) — hverken podcast eller TV
   sizeBytes?: number // kun torrents
   rawName?: string // kun torrents: navnet på disken (/5TB_DISK/Torrents/<navn>) — til "Afspil på tv'et"
+  hash?: string // kun torrents: infohash'en, eller sha1('drtv:'+DR's nummer) for et DR TV-afsnit hentet som video
 }
 
 export type Favorite = {

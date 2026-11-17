@@ -44,11 +44,39 @@ export type TvSpiller = {
   podcast?: TvMeta | null
 }
 
+/** Podcasten fra appen, der spiller et andet sted end telefonen (Kodi på tv'et eller en højttaler). */
+export type TvFjern = {
+  maal: string // "stuen" eller højttalerens Cast-id
+  navn: string
+  titel: string | null
+  podcast: TvMeta | null
+  spiller: boolean
+  pause: boolean
+  tid: number
+  laengde: number
+  slut: boolean
+  lydstyrke?: number | null // højttaler 0-100, Denon'en 0-98
+}
+
 export type TvStatus = {
   tv: { taendt: boolean; app: string | null; skaerm?: boolean }
   kodi: { koerer: boolean; spiller: TvSpiller | null } | null
   denon: { taendt: boolean; indgang: string | null; lydstyrke: number | null; mute: boolean } | null
-  job: { trin: string | null; fejl: string | null; sti: string | null; tid: number; url?: string | null; titel?: string | null }
+  job: { trin: string | null; fejl: string | null; sti: string | null; tid: number; url?: string | null; titel?: string | null; maal?: string | null }
+  fjern?: TvFjern | null // fra tv-helper 2026-11-17
+}
+
+/** Et sted, en podcast kan spilles: tv'et i stuen eller en Google Home-højttaler. */
+export type TvMaal = { id: string; navn: string; type: 'tv' | 'cast'; model?: string; gruppe?: boolean }
+
+/** En video på HTPC's disk (torrent eller DR TV-afsnit), klar til tv'et eller telefonen. */
+export type TvVideo = { sti: string; titel: string; url?: string; type?: string; str?: number }
+export type TvFund = TvVideo & {
+  fundet: boolean
+  mappe?: boolean
+  antal?: number
+  afspil?: string | null // den ene video i mappen, ellers null (sæsonpakke: se filer)
+  filer?: TvVideo[]
 }
 
 /** HTPC kunne ikke nås — typisk fordi man ikke er hjemme. */
@@ -121,9 +149,28 @@ export const tvListe = (mappe = '') =>
   kald<{ poster: TvPost[]; scannet: number }>('GET', `/api/liste?mappe=${encodeURIComponent(mappe)}`, undefined, 20000)
 export const tvStatus = () => kald<TvStatus>('GET', '/api/status')
 export const tvAfspil = (sti: string) => kald<{ ok: boolean }>('POST', '/api/afspil', { sti })
-/** En podcast på tv'et: Kodi afspiller lyd-URL'en fra `start` sekunder. */
-export const tvAfspilUrl = (url: string, titel: string, start: number, meta: TvMeta) =>
-  kald<{ ok: boolean }>('POST', '/api/afspil', { url, titel, start: Math.floor(start), meta })
+/** En podcast på tv'et (maal "stuen") eller en højttaler: afspilles fra `start` sekunder. */
+export const tvAfspilUrl = (
+  url: string,
+  titel: string,
+  start: number,
+  meta: TvMeta,
+  maal = 'stuen',
+  ekstra: { billede?: string; udgiver?: string } = {},
+) => kald<{ ok: boolean }>('POST', '/api/afspil', { url, titel, start: Math.floor(start), meta, maal, ...ekstra })
+/** Hvor en podcast kan spilles ud over telefonen. */
+export const tvMaal = () => kald<{ maal: TvMaal[] }>('GET', '/api/maal', undefined, 6000)
+/** Pause, spol og stop på det, appen har sendt et andet sted hen. */
+export const tvFjern = (handling: string, ekstra: Record<string, unknown> = {}) =>
+  kald<{ ok: boolean }>('POST', '/api/fjern', { handling, ...ekstra })
+/** En torrent (navnet fra qBittorrent) eller et DR TV-afsnit (DR's nummer) på disken. */
+export const tvFind = (q: { navn?: string; drtv?: string }) =>
+  kald<TvFund>(
+    'GET',
+    '/api/find?' + (q.drtv ? `drtv=${encodeURIComponent(q.drtv)}` : `navn=${encodeURIComponent(q.navn || '')}`),
+    undefined,
+    20000,
+  )
 export const tvTaend = () => kald<{ ok: boolean }>('POST', '/api/taend', {})
 export const tvKontrol = (handling: string, ekstra: Record<string, unknown> = {}) =>
   kald<{ ok: boolean }>('POST', '/api/kontrol', { handling, ...ekstra })

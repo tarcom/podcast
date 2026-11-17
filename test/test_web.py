@@ -164,6 +164,7 @@ try:
     # luk afspilleren
     d.find_element(By.CSS_SELECTOR, '.mini-aabn').click()
     wait(lambda: d.find_element(By.CSS_SELECTOR, '.ark'))
+    time.sleep(0.5)  # afspilleren glider op (0,22 s) — et tryk midt i rammer ved siden af ✕
     d.find_elements(By.CSS_SELECTOR, '.ark-top .ark-ikon')[1].click()
     time.sleep(0.5)
     ok(not d.find_elements(By.CSS_SELECTOR, '.mini'), 'afspilleren er væk efter ✕')

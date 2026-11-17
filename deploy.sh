@@ -4,6 +4,9 @@
 #   ./deploy.sh api      # upload api/*.php  (config.php included — it's needed on the server)
 #   ./deploy.sh web      # build web/ and upload web/dist/* to /podcast
 #   ./deploy.sh          # both
+#   ./deploy.sh app <apk> <versionCode> <versionName> "<hvad er nyt>"
+#                        # the Android app (podcast-android): app/alldkpodcasts.apk, then
+#                        # app/version.json, which the app (3.1+) checks to offer the update itself
 #
 # Creds in .ftp-credentials (gitignored): FTP_HOST, FTP_USER, FTP_PASS. Shared with the other
 # aogj.com projects.
@@ -38,10 +41,23 @@ do_web() {
     done )
 }
 
+do_app() { # <apk> <versionCode> <versionName> <nyt>
+    local apk="$1" code="$2" name="$3" nyt="${4:-}"
+    [ -f "$apk" ] && [[ "$code" =~ ^[0-9]+$ ]] && [ -n "$name" ]         || { echo "usage: ./deploy.sh app <apk> <versionCode> <versionName> \"<hvad er nyt>\""; exit 1; }
+    local json; json="$(mktemp)"
+    python3 -c 'import json,sys; print(json.dumps({"versionCode": int(sys.argv[1]), "versionName": sys.argv[2],
+        "url": "https://aogj.com/podcast/app/alldkpodcasts.apk", "nyt": sys.argv[3]}, ensure_ascii=False))'         "$code" "$name" "$nyt" > "$json"
+    # APK'en først: version.json må aldrig pege på en APK, der ikke er lagt op endnu
+    upload "$apk" "app/alldkpodcasts.apk"
+    upload "$json" "app/version.json"
+    rm -f "$json"
+}
+
 case "${1:-all}" in
     api) do_api ;;
     web) do_web ;;
+    app) shift; do_app "$@" ;;
     all) do_api; do_web ;;
-    *) echo "usage: ./deploy.sh [api|web|all]"; exit 1 ;;
+    *) echo "usage: ./deploy.sh [api|web|all|app]"; exit 1 ;;
 esac
 echo "Done."

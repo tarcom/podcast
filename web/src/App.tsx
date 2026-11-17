@@ -45,26 +45,76 @@ import {
   type StateWrite,
 } from './lib/offline'
 import { pushBack } from './lib/back'
-import { APK_URL, appOutdated, nativeClosePlayer } from './lib/native'
+import { aabnVideoIApp, APK_URL, appOutdated, host, inAndroidApp, kanOpdatereSelv, LATEST_APK, nativeClosePlayer } from './lib/native'
 import { clearNowPlaying, readNowPlaying, saveNowPlaying } from './lib/nowplaying'
 import { loadPref, savePref } from './lib/prefs'
-import { jobIGang, tvAfspil, tvAfspilUrl, tvListe, tvStatus, TvUnreachable, type TvStatus } from './lib/tv'
+import {
+  jobIGang,
+  tvAfspil,
+  tvAfspilUrl,
+  tvFind,
+  tvFjern,
+  tvMaal,
+  tvStatus,
+  TvUnreachable,
+  type TvFjern,
+  type TvFund,
+  type TvMaal,
+  type TvStatus,
+  type TvVideo,
+} from './lib/tv'
 import { BUILD_ID, deployedBuild } from './lib/version'
 import type { ChartEpisode, ChartShow } from './lib/api'
 import type { EpisodeRow, Favorite, Podcast } from './types'
 import { FuldSpiller, MiniSpiller } from './Spiller'
+import { FjernSpiller, FjernTid, MaalVaelger } from './Fjern'
 import { fmtClock } from './lib/format'
 import Stuen from './Stuen'
-import { IkonHentet, IkonKoe, IkonOpdater, IkonStjerne, IkonTv, IkonUdforsk } from './ikoner'
+import {
+  IkonCast,
+  IkonHentet,
+  IkonKoe,
+  IkonOpdater,
+  IkonPause,
+  IkonPlay,
+  IkonStjerne,
+  IkonTelefon,
+  IkonTv,
+  IkonUdforsk,
+} from './ikoner'
 
 type Tab = 'explore' | 'favorites' | 'queue' | 'downloads' | 'stuen'
 type DlState = 'idle' | 'queued' | 'busy' | 'done' | 'error'
 type LangMode = 'da-first' | 'da-only' | 'all'
 type Reach = 'ukendt' | 'ok' | 'ude'
 
-// En podcast sendt til tv'et i stuen. Så længe den spiller dér, gemmes positionen på afsnittet
-// her (hvert 15. sek., mens app'en er fremme), så "Fortsætter" og telefonen følger med.
-type TvSession = { episodeId: number; feedId: number; url: string; title: string; durationSec: number; startedAt: number }
+// En podcast sendt til tv'et i stuen eller en Google Home-højttaler (maal = højttalerens id;
+// mangler den, er det tv'et — sådan så de ud før 2026-11-17). Så længe den spiller dér, gemmes
+// positionen på afsnittet her (hvert 15. sek., mens app'en er fremme), så "Fortsætter" og
+// telefonen følger med.
+type TvSession = {
+  episodeId: number
+  feedId: number
+  url: string
+  title: string
+  durationSec: number
+  startedAt: number
+  maal?: string
+  maalNavn?: string
+  image?: string
+}
+const STUEN: TvMaal = { id: 'stuen', navn: "Tv'et i stuen", type: 'tv' }
+
+// DR's nummer på et DR TV-afsnit (…/drtv/episode/deadline_633509) — det samme, som
+// podcast/scraper/drtv_hent.py gemmer det hentede afsnit under.
+function drtvNummer(ep: EpisodeRow): string | null {
+  const m = /\/drtv\/episode\/[^?#]*_(\d+)/.exec(ep.linkUrl || '')
+  return m ? m[1] : null
+}
+async function sha1Hex(tekst: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(tekst))
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 const isDanish = (lang?: string) => (lang || '').toLowerCase().startsWith('da')
 
@@ -380,6 +430,14 @@ export default function App() {
     loadPref<TvSession | null>('tvSession', null, (v) => !!v && typeof v === 'object'),
   )
   const tvSessionRef = useRef(tvSession)
+  const [tvStatAt, setTvStatAt] = useState(0) // hvornår tvStat blev hentet (tiden tikker videre)
+  // "Afspil på …": afsnittet, der skal vælges et sted til, og stederne fra tv-helper
+  const [maalFor, setMaalFor] = useState<EpisodeRow | null>(null)
+  const [maalListe, setMaalListe] = useState<TvMaal[]>([STUEN])
+  const [maalHenter, setMaalHenter] = useState(false)
+  const maalHentet = useRef(0)
+  const [fjernOpen, setFjernOpen] = useState(false) // styringen af det, der spiller et andet sted
+  const fjernOpenRef = useRef(false)
   const tabRef = useRef(tab)
   useEffect(() => {
     tabRef.current = tab
@@ -704,15 +762,32 @@ export default function App() {
     [persistState],
   )
 
-  // En podcast, der er sendt til tv'et: gem positionen, mens den spiller dér, og markér den hørt,
-  // når den er spillet færdig. Kører kun, mens app'en er fremme (det er dér, den poller).
+  // En podcast, der er sendt til tv'et eller en højttaler: gem positionen, mens den spiller dér,
+  // og markér den hørt, når den er spillet færdig. Kører kun, mens app'en er fremme (det er dér,
+  // den poller). `fjern` (tv-helper fra 2026-11-17) dækker begge; `kodi.spiller` er den gamle vej.
   const followTvSession = useCallback(
     (st: TvStatus) => {
       const sess = tvSessionRef.current
       if (!sess) return
-      const sp = st.kodi?.spiller
+      const fj = st.fjern
+      const vores = !!fj && fj.podcast?.episodeId === sess.episodeId
+      const sp =
+        fj !== undefined
+          ? fj && vores && fj.spiller
+            ? { tid: fj.tid, laengde: fj.laengde }
+            : null
+          : st.kodi?.spiller?.podcast?.episodeId === sess.episodeId
+            ? st.kodi.spiller
+            : null
       const ep = { episodeId: sess.episodeId, feedId: sess.feedId } as EpisodeRow
-      if (sp && sp.podcast?.episodeId === sess.episodeId) {
+      if (fj && vores && fj.slut) {
+        // højttaleren har spillet afsnittet færdigt
+        markHeard(ep, true).catch(() => {})
+        lastTvPos.current = null
+        setTvSession(null)
+        return
+      }
+      if (sp) {
         const durSec = sp.laengde || sess.durationSec
         lastTvPos.current = { pos: sp.tid, dur: durSec }
         if (Date.now() - lastTvSave.current > 15_000 && sp.tid > 0) {
@@ -742,6 +817,7 @@ export default function App() {
     try {
       st = await tvStatus()
       setTvStat(st)
+      setTvStatAt(Date.now())
       setTvReach('ok')
       followTvSession(st)
     } catch (e) {
@@ -751,7 +827,12 @@ export default function App() {
       }
     }
     if (!visible() || nativeHidden.current) return
-    const ms = tabRef.current === 'stuen' ? (jobIGang(st) ? 1000 : 2500) : tvSessionRef.current ? 15_000 : 0
+    // Stuen viser tv'et live; styringen af en højttaler/tv'et (fjernOpen) og et job, der er i gang
+    // (tænder tv'et …), vises tæt på live; ellers følges et afsnit dér hvert 15. sek.
+    const ms =
+      tabRef.current === 'stuen'
+        ? jobIGang(st) ? 1000 : 2500
+        : fjernOpenRef.current || jobIGang(st) ? 2000 : tvSessionRef.current ? 15_000 : 0
     if (ms) tvTimer.current = window.setTimeout(() => pollTvRef.current(), ms)
   }, [followTvSession])
   useEffect(() => {
@@ -761,6 +842,10 @@ export default function App() {
     window.clearTimeout(tvTimer.current)
     tvTimer.current = window.setTimeout(() => pollTvRef.current(), ms)
   }, [])
+  useEffect(() => {
+    fjernOpenRef.current = fjernOpen
+    if (fjernOpen) pollTvSoon(0)
+  }, [fjernOpen, pollTvSoon])
 
   // ---------- opdatering: når app'en kommer frem, og jævnligt mens den er fremme ----------
   // En installeret PWA lukkes sjældent helt, og i Android-app'en lever siden så længe processen
@@ -1060,9 +1145,34 @@ export default function App() {
   // Hørte afsnit kommer uden `description` fra køen (den fylder ~halvdelen af payloaden), så
   // teksten hentes her når pop-up'en faktisk åbnes — og patches ind i listerne, så den kun
   // hentes én gang pr. afsnit.
+  // ---------- video fra HTPC: torrents og DR TV-afsnit, på tv'et eller telefonen ----------
+  // DR TV-programmerne, der følges, henter HTPC også som video (podcast/scraper/drtv_hent.py),
+  // så de kan ses på tv'et og telefonen ligesom en torrent. tv-helper finder filen på disken.
+  // Det virker kun hjemme; ude er der kun DR TV's eget link (og for en torrent ingenting).
+  const [video, setVideo] = useState<{ id: number; tilstand: 'henter' | 'fundet' | 'ikke' | 'ude'; fund?: TvFund } | null>(null)
+  const findVideo = useCallback(async (ep: EpisodeRow) => {
+    const drtv = drtvNummer(ep)
+    if (ep.kind !== 'torrent' && !drtv) return
+    if (!navigator.onLine) {
+      setVideo({ id: ep.episodeId, tilstand: 'ude' })
+      return
+    }
+    setVideo({ id: ep.episodeId, tilstand: 'henter' })
+    try {
+      const fund = await tvFind(drtv ? { drtv } : { navn: ep.rawName || '' })
+      setVideo({ id: ep.episodeId, tilstand: fund.fundet ? 'fundet' : 'ikke', fund })
+      setTvReach('ok')
+    } catch (e) {
+      setVideo({ id: ep.episodeId, tilstand: e instanceof TvUnreachable ? 'ude' : 'ikke' })
+      if (e instanceof TvUnreachable) setTvReach('ude')
+    }
+  }, [])
+
   const showEpisode = useCallback(
     (ep: EpisodeRow) => {
       setOpenEpisode(ep)
+      setVideo(null)
+      if (ep.kind === 'torrent' || drtvNummer(ep)) findVideo(ep)
       if (ep.description || ep.kind === 'torrent') return
       setDescBusy(true)
       episodeDescription(ep.feedId, ep.episodeId)
@@ -1079,7 +1189,7 @@ export default function App() {
         })
         .finally(() => setDescBusy(false))
     },
-    [],
+    [findVideo],
   )
 
   // Androids tilbage-knap lukker det øverste først (se lib/back.ts)
@@ -1097,6 +1207,20 @@ export default function App() {
       return true
     })
   }, [openPodcast])
+  useEffect(() => {
+    if (!maalFor) return
+    return pushBack(() => {
+      setMaalFor(null)
+      return true
+    })
+  }, [maalFor])
+  useEffect(() => {
+    if (!fjernOpen) return
+    return pushBack(() => {
+      setFjernOpen(false)
+      return true
+    })
+  }, [fjernOpen])
   useEffect(() => {
     if (!openEpisode) return
     return pushBack(() => {
@@ -1403,10 +1527,12 @@ export default function App() {
     return () => window.clearInterval(iv)
   }, [sleepUntil])
 
-  // ---------- Stuen: send til tv'et ----------
-  // En podcast på tv'et: Kodi spiller lyden fra hvor man er nu, og app'en følger med (TvSession).
-  const playOnTv = useCallback(
-    async (ep: EpisodeRow) => {
+  // ---------- Afspil på …: tv'et i stuen eller en Google Home-højttaler ----------
+  // En podcast spilles fra hvor man er nu, og app'en følger med (TvSession). Den lokale afspiller
+  // pauses først. Tv'et får lyden gennem HTPC (Kodi hang på DR's adresser); en højttaler henter
+  // den selv hos udbyderen.
+  const playRemote = useCallback(
+    async (ep: EpisodeRow, maal: TvMaal) => {
       if (!ep.audioUrl) return
       const el = audioRef.current
       let start = ep.positionSec || 0
@@ -1420,57 +1546,96 @@ export default function App() {
         savePositionNow()
       }
       const title = ep.podcastTitle ? `${ep.podcastTitle}: ${ep.title}` : ep.title
+      const billede = [ep.image, ep.podcastImage].find((u) => !!u && u.startsWith('https://'))
       try {
-        await tvAfspilUrl(ep.audioUrl, title, start, { episodeId: ep.episodeId, feedId: ep.feedId, durationSec: ep.durationSec })
+        await tvAfspilUrl(
+          ep.audioUrl,
+          maal.type === 'tv' ? title : ep.title,
+          start,
+          { episodeId: ep.episodeId, feedId: ep.feedId, durationSec: ep.durationSec },
+          maal.id,
+          { billede, udgiver: ep.podcastTitle },
+        )
       } catch (e) {
-        showToast(e instanceof TvUnreachable ? 'Stuen kan kun nås hjemme på wifi\'en' : `Tv'et svarede ikke: ${e instanceof Error ? e.message : ''}`)
+        showToast(
+          e instanceof TvUnreachable
+            ? "Det kan kun nås hjemme på wifi'en"
+            : `${maal.navn} svarede ikke: ${e instanceof Error ? e.message : ''}`,
+        )
         return
       }
       lastTvPos.current = null
       lastTvSave.current = 0
-      setTvSession({ episodeId: ep.episodeId, feedId: ep.feedId, url: ep.audioUrl, title, durationSec: ep.durationSec, startedAt: Date.now() })
+      setTvSession({
+        episodeId: ep.episodeId,
+        feedId: ep.feedId,
+        url: ep.audioUrl,
+        title,
+        durationSec: ep.durationSec,
+        startedAt: Date.now(),
+        maal: maal.id,
+        maalNavn: maal.navn,
+        image: billede,
+      })
       setSheetOpen(false)
       setOpenEpisode(null)
-      openStuen()
-      showToast("Sendt til tv'et — det tænder af sig selv")
+      setMaalFor(null)
+      pollTvSoon(400)
+      showToast(maal.type === 'tv' ? "Sendt til tv'et — det tænder af sig selv" : `Spiller på ${maal.navn}`)
     },
-    [savePositionNow, showToast, openStuen],
+    [savePositionNow, showToast, pollTvSoon],
   )
 
-  // En torrent på tv'et: find den på disken (samme navn som i qBittorrent). En mappe med én
-  // video afspilles direkte; en sæson-pakke åbnes i Stuen, så man kan vælge afsnittet.
-  const playTorrentOnTv = useCallback(
-    async (ep: EpisodeRow) => {
-      const name = ep.rawName
-      if (!name) return
-      let poster
+  // Vælg hvor: stederne hentes fra tv-helper, når vælgeren åbnes (højst hvert halve minut).
+  const openMaal = useCallback((ep: EpisodeRow) => {
+    setMaalFor(ep)
+    if (Date.now() - maalHentet.current < 30_000) return
+    setMaalHenter(true)
+    tvMaal()
+      .then((r) => {
+        maalHentet.current = Date.now()
+        setMaalListe(r.maal.length ? r.maal : [STUEN])
+        setTvReach('ok')
+      })
+      .catch((e) => {
+        if (e instanceof TvUnreachable) setTvReach('ude')
+      })
+      .finally(() => setMaalHenter(false))
+  }, [])
+
+  // En video fra disken på tv'et: Kodi spiller den, og Stuen åbnes med fjernbetjeningen.
+  const playVideoOnTv = useCallback(
+    async (v: TvVideo) => {
       try {
-        poster = (await tvListe('Torrents')).poster
+        await tvAfspil(v.sti)
       } catch (e) {
-        showToast(e instanceof TvUnreachable ? 'Stuen kan kun nås hjemme på wifi\'en' : 'HTPC svarede ikke')
-        return
-      }
-      const p = poster.find((x) => x.navn === name)
-      if (!p) {
-        showToast('Fandt den ikke på disken — den kan være ryddet væk')
+        showToast(e instanceof TvUnreachable ? "Tv'et kan kun nås hjemme på wifi'en" : 'Kunne ikke starte afspilningen')
         return
       }
       setOpenEpisode(null)
-      if (p.mappe && !p.afspil) {
-        setStuenMappe(p.sti)
-        openStuen()
-        return
-      }
-      try {
-        await tvAfspil(p.afspil || p.sti)
-        showToast("Sendt til tv'et — det tænder af sig selv")
-      } catch {
-        showToast('Kunne ikke starte afspilningen')
-      }
+      showToast("Sendt til tv'et — det tænder af sig selv")
       openStuen()
     },
     [showToast, openStuen],
   )
+
+  // Og på telefonen: i app'en (3.1) åbner den telefonens egen afspiller (Kodi, VLC …) med
+  // adressen på HTPC; i en browser er det et rigtigt link (window.open blokeres i en PWA).
+  const phoneVideo = (v: TvVideo, cls: string, kort = false) =>
+    !v.url ? null : host?.aabnVideo ? (
+      <button
+        className={cls}
+        onClick={() => {
+          if (!aabnVideoIApp(v.url!, v.titel, v.type || 'video/*')) showToast('Kunne ikke åbne en afspiller')
+        }}
+      >
+        <IkonTelefon size={kort ? 16 : 18} /> {kort ? 'Telefon' : 'Afspil på telefonen'}
+      </button>
+    ) : (
+      <a className={cls} href={v.url} target="_blank" rel="noopener">
+        <IkonTelefon size={kort ? 16 : 18} /> {kort ? (inAndroidApp ? 'Telefon' : 'Her') : inAndroidApp ? 'Afspil på telefonen' : 'Afspil her'}
+      </a>
+    )
 
   // ---------- hitlister ----------
   // Hitliste-opslag: normaliseret titel -> placering. Apple giver ingen fælles id'er
@@ -1503,10 +1668,121 @@ export default function App() {
   )
 
   // Køen + torrents i én kronologi. Torrents er højst 50 og kommer fra deres eget kald.
-  const fullQueue = useMemo(
-    () => (torrents.length ? [...queue, ...torrents].sort((a, b) => b.publishedAt - a.publishedAt) : queue),
-    [queue, torrents],
+  // Et DR TV-afsnit, som HTPC også har hentet som video, kom to gange: som afsnit fra favoritten
+  // og som "torrent" fra tick.py (hash = sha1('drtv:' + DR's nummer)). Kun afsnittet vises; dets
+  // pop-up spiller videoen på tv'et eller telefonen.
+  const [drHashes, setDrHashes] = useState<Set<string>>(() => new Set())
+  useEffect(() => {
+    const numre = [...new Set(queue.map(drtvNummer).filter((x): x is string => !!x))]
+    if (!numre.length || !window.crypto?.subtle) return
+    let stop = false
+    Promise.all(numre.map((n) => sha1Hex('drtv:' + n)))
+      .then((h) => {
+        if (!stop) setDrHashes(new Set(h))
+      })
+      .catch(() => {})
+    return () => {
+      stop = true
+    }
+  }, [queue])
+  const fullQueue = useMemo(() => {
+    const t = torrents.filter((x) => !x.hash || !drHashes.has(x.hash))
+    return t.length ? [...queue, ...t].sort((a, b) => b.publishedAt - a.publishedAt) : queue
+  }, [queue, torrents, drHashes])
+  const fullQueueRef = useRef<EpisodeRow[]>(fullQueue)
+  useEffect(() => {
+    fullQueueRef.current = fullQueue
+  }, [fullQueue])
+
+  // Det, appen har sendt til tv'et eller en højttaler, som det stod ved seneste status.
+  const fjernNu: TvFjern | null = useMemo(() => {
+    if (!tvSession || !tvStat) return null
+    const f = tvStat.fjern
+    if (f && f.podcast?.episodeId === tvSession.episodeId) return f
+    const sp = tvStat.kodi?.spiller // tv-helper fra før 2026-11-17 havde kun den
+    if (f === undefined && sp?.podcast?.episodeId === tvSession.episodeId)
+      return { maal: 'stuen', navn: "Tv'et i stuen", titel: sp.titel, podcast: sp.podcast, spiller: true, pause: sp.pause, tid: sp.tid, laengde: sp.laengde, slut: false }
+    return null
+  }, [tvSession, tvStat])
+  // (tiden måles fra statussens hentetidspunkt, ikke Date.now() — render skal være ren)
+  const fjernStarter = !!tvSession && !fjernNu?.spiller && jobIGang(tvStat) && tvStatAt - tvSession.startedAt < 120_000
+
+  const fjernKontrol = useCallback(
+    async (handling: string, ekstra: Record<string, unknown> = {}) => {
+      try {
+        await tvFjern(handling, ekstra)
+      } catch (e) {
+        showToast(e instanceof TvUnreachable ? "Det kan kun styres hjemme på wifi'en" : 'Det svarede ikke')
+      }
+      pollTvSoon(400)
+    },
+    [showToast, pollTvSoon],
   )
+
+  // "Fortsæt på telefonen": stop det dér, og spil videre her fra samme sted.
+  const takeBack = useCallback(async () => {
+    const sess = tvSessionRef.current
+    if (!sess) return
+    const pos = Math.floor(fjernNu?.tid ?? lastTvPos.current?.pos ?? 0)
+    try {
+      await tvFjern('stop')
+    } catch {
+      /* ude af huset eller allerede stoppet — vi spiller videre her alligevel */
+    }
+    setTvSession(null)
+    lastTvPos.current = null
+    setFjernOpen(false)
+    const ep =
+      fullQueueRef.current.find((e) => e.episodeId === sess.episodeId) ||
+      ({ feedId: sess.feedId, episodeId: sess.episodeId, title: sess.title, audioUrl: sess.url, durationSec: sess.durationSec, positionSec: pos, image: sess.image } as EpisodeRow)
+    if (pos > 0) persistState({ episodeId: ep.episodeId, feedId: ep.feedId, positionSec: pos, durationSec: ep.durationSec || sess.durationSec }).catch(() => {})
+    const el = audioRef.current
+    if (currentRef.current?.episodeId === ep.episodeId && el?.getAttribute('src')) {
+      el.currentTime = pos
+      setCurTime(pos)
+      resume()
+    } else {
+      playEpisode({ ...ep, positionSec: pos })
+    }
+  }, [fjernNu, persistState, resume, playEpisode])
+
+  // Et tryk på en notifikation om et nyt afsnit (Android-app'en fra 3.1): app'en husker afsnittet,
+  // og siden tager det, når køen har det — også når app'en blev startet af trykket.
+  const ventende = useRef<{ id: number; afspil: boolean; tid: number } | null>(null)
+  const tagVentende = useCallback(() => {
+    try {
+      const raw = host?.ventendeAfsnit?.()
+      if (raw) {
+        const d = JSON.parse(raw) as { id?: unknown; afspil?: unknown }
+        if (Number(d.id)) ventende.current = { id: Number(d.id), afspil: !!d.afspil, tid: Date.now() }
+      }
+    } catch {
+      /* ældre app eller et ugyldigt svar */
+    }
+    const v = ventende.current
+    if (!v) return false
+    if (Date.now() - v.tid > 120_000) {
+      ventende.current = null
+      return false
+    }
+    const ep = fullQueueRef.current.find((e) => e.episodeId === v.id)
+    if (!ep) return true // ikke i køen endnu — prøv igen, når den er hentet
+    ventende.current = null
+    setTab('queue')
+    if (v.afspil && ep.audioUrl) playEpisode(ep)
+    else showEpisode(ep)
+    return false
+  }, [playEpisode, showEpisode])
+  useEffect(() => {
+    const paa = () => {
+      if (tagVentende()) refreshAll(true)
+    }
+    window.addEventListener('dkpod:afsnit', paa)
+    return () => window.removeEventListener('dkpod:afsnit', paa)
+  }, [tagVentende, refreshAll])
+  useEffect(() => {
+    if (queueLoaded) tagVentende()
+  }, [fullQueue, queueLoaded, tagVentende])
   const unheardCount = fullQueue.filter((e) => !e.playedAt).length
   // Filteret skærer kun i det der VISES; tælleren i toppen og badget på fanen bliver ved med at
   // gælde hele køen, så et tændt filter ikke ser ud som om afsnittene er forsvundet.
@@ -1537,6 +1813,11 @@ export default function App() {
   const shownUnheard = filterOn ? shownQueue.filter((e) => !e.playedAt).length : unheardCount
   const toggleStarFilter = (n: number) =>
     setStarFilter((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n].sort()))
+  const askPin = () => {
+    setTab('queue')
+    setPinOpen(true)
+    setPinErr('')
+  }
   const toggleCat = (c: Category) => {
     if (c === 'torrent' && !torrentToken) {
       setPinOpen((v) => !v)
@@ -1657,7 +1938,8 @@ export default function App() {
     { key: 'stuen', label: 'Stuen', icon: <IkonTv /> },
   ]
 
-  const tvPlaying = tvStat?.kodi?.spiller || null
+  // Opslaget på HTPC for netop det afsnit, pop-up'en viser (video: torrent eller DR TV)
+  const videoNu = video && openEpisode && video.id === openEpisode.episodeId ? video : null
 
   // ---------- render ----------
   return (
@@ -1685,9 +1967,17 @@ export default function App() {
 
       {appOutdated && (
         <p className="banner update">
-          📲 <span><strong>Ny udgave af app'en:</strong> afspilleren bliver nu i notifikationen, også når du pauser.</span>
-          <a className="banner-btn" href={APK_URL} target="_blank" rel="noopener">Hent den</a>
-          <span className="banner-note">Sker der intet, så åbn aogj.com/podcast/app/alldkpodcasts.apk i Chrome.</span>
+          📲{' '}
+          <span>
+            <strong>Ny udgave af app'en ({LATEST_APK}):</strong> video fra HTPC på telefonen, besked om nye afsnit med ★★★, og
+            fremover siger den selv til, når der er en ny.
+          </span>
+          {kanOpdatereSelv ? (
+            <button className="banner-btn" onClick={() => host?.opdater?.()}>Opdatér</button>
+          ) : (
+            <a className="banner-btn" href={APK_URL} target="_blank" rel="noopener">Hent den</a>
+          )}
+          {!kanOpdatereSelv && <span className="banner-note">Sker der intet, så åbn aogj.com/podcast/app/alldkpodcasts.apk i Chrome.</span>}
         </p>
       )}
       {newVersion && (
@@ -1763,23 +2053,6 @@ export default function App() {
         <section className="panel">
           {favorites.length === 0 && <p className="muted">Ingen favoritter endnu — find nogle under Udforsk og giv dem en, to eller tre stjerner.</p>}
           <div className="grid">
-            {/* Torrent: fast kort øverst (kun med koden). Stjerner som en podcast, men intet Slet —
-                den kan ikke fjernes. Et tryk viser torrents i køen. */}
-            {torrentToken && (
-              <PodcastCard
-                podcast={{ id: TORRENT_FEED_ID, title: 'Torrent', author: 'Alt hvad qBittorrent har hentet på HTPC' }}
-                icon="🧲"
-                fixed
-                level={torrentStars}
-                onStars={changeTorrentStars}
-                onDelete={() => {}}
-                onOpen={() => {
-                  setStarFilter([])
-                  setCatFilter(['torrent'])
-                  setTab('queue')
-                }}
-              />
-            )}
             {favorites.map((f) => (
               <PodcastCard
                 key={f.feedId}
@@ -1791,6 +2064,30 @@ export default function App() {
                 onOpen={() => openDetail(f)}
               />
             ))}
+            {/* Torrent: fast kort ALLERNEDERST (2026-11-17, før øverst og kun med koden). Stjerner
+                som en podcast — de gælder alle torrents i køen og dermed filteret — men intet Slet;
+                den kan ikke fjernes. Uden koden er kortet låst, og et tryk beder om koden. */}
+            <PodcastCard
+              podcast={{
+                id: TORRENT_FEED_ID,
+                title: 'Torrent',
+                author: torrentToken ? 'Alt hvad HTPC har hentet' : '🔒 Låst — tryk for at taste koden',
+              }}
+              icon="🧲"
+              fixed
+              level={torrentToken ? torrentStars : 0}
+              onStars={torrentToken ? changeTorrentStars : askPin}
+              onDelete={() => {}}
+              onOpen={
+                torrentToken
+                  ? () => {
+                      setStarFilter([])
+                      setCatFilter(['torrent'])
+                      setTab('queue')
+                    }
+                  : askPin
+              }
+            />
           </div>
         </section>
       )}
@@ -1886,28 +2183,6 @@ export default function App() {
             </form>
           )}
 
-          {canDownload && (
-            <div className="bulkbar">
-              <span className="bulk-text">⬇ Hent uhørte til offline</span>
-              {bulk ? (
-                <span className="bulk-actions">
-                  <span className="bulk-progress">
-                    <span className="spinner" aria-hidden="true" /> Henter {Math.min(bulk.done + 1, bulk.total)} af {bulk.total}…
-                  </span>
-                  <button className="ghost" onClick={() => { cancelBulk.current = true }}>Stop</button>
-                </span>
-              ) : (
-                <span className="bulk-actions">
-                  {[5, 10, 20].map((n) => (
-                    <button key={n} className="ghost" disabled={!online} onClick={() => downloadNext(n)}>
-                      {n}
-                    </button>
-                  ))}
-                </span>
-              )}
-            </div>
-          )}
-
           {/* Spinner OVER listen: cachen er allerede tegnet, det her er kun feed-tjekket. */}
           {checkingFeeds && (
             <p className="feedcheck">
@@ -1956,6 +2231,30 @@ export default function App() {
               <button className="ghost" onClick={clearAllDownloads}>Slet alle</button>
             )}
           </div>
+
+          {/* Bulk-hentningen lå øverst i køen indtil 2026-11-17 — den bruges sjældent, så her. */}
+          {canDownload && (
+            <div className="bulkbar">
+              <span className="bulk-text">⬇ Hent de næste uhørte</span>
+              {bulk ? (
+                <span className="bulk-actions">
+                  <span className="bulk-progress">
+                    <span className="spinner" aria-hidden="true" /> Henter {Math.min(bulk.done + 1, bulk.total)} af {bulk.total}…
+                  </span>
+                  <button className="ghost" onClick={() => { cancelBulk.current = true }}>Stop</button>
+                </span>
+              ) : (
+                <span className="bulk-actions">
+                  {[5, 10, 20].map((n) => (
+                    <button key={n} className="ghost" disabled={!online} onClick={() => downloadNext(n)}>
+                      {n}
+                    </button>
+                  ))}
+                </span>
+              )}
+            </div>
+          )}
+
 
           {storage && (
             <div className="storage">
@@ -2049,12 +2348,67 @@ export default function App() {
               <div className="ep-actions">
                 <button className="primary" onClick={() => { playEpisode(openEpisode); setOpenEpisode(null) }}>▶ Afspil</button>
                 {tvKnapForPodcast && (
-                  <button className="ghost tv" onClick={() => playOnTv(openEpisode)} title="Spil afsnittet på tv'et i stuen">
-                    <IkonTv size={16} /> På tv'et
+                  <button className="ghost tv" onClick={() => openMaal(openEpisode)} title="Spil afsnittet på tv'et eller en højttaler">
+                    <IkonCast size={16} /> Afspil på …
                   </button>
                 )}
                 <button className="ghost" onClick={() => { markHeard(openEpisode, !openEpisode.playedAt); setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() }) }}>
                   {openEpisode.playedAt ? '↺ Markér uhørt' : '✓ Markér hørt'}
+                </button>
+              </div>
+            ) : openEpisode.kind === 'torrent' || (drtvNummer(openEpisode) && playErrorId !== openEpisode.episodeId) ? (
+              // Video fra HTPC: torrents og de DR TV-afsnit, HTPC har hentet. Samme valg for begge.
+              <div className="linkout video">
+                <p className="linkout-msg">
+                  {openEpisode.kind === 'torrent' ? (
+                    <>🧲 Hentet på HTPC{openEpisode.sizeBytes ? ` (${fmtBytes(openEpisode.sizeBytes)})` : ''}. </>
+                  ) : (
+                    <>📺 Et <strong>TV-program</strong> fra DR. </>
+                  )}
+                  {videoNu?.tilstand === 'henter' && 'Leder efter den på HTPC …'}
+                  {videoNu?.tilstand === 'ude' &&
+                    (openEpisode.kind === 'torrent' ? "Den kan kun ses hjemme på wifi'en." : "HTPC's kopi kan kun ses hjemme på wifi'en — ellers hos DR TV:")}
+                  {videoNu?.tilstand === 'ikke' &&
+                    (openEpisode.kind === 'torrent'
+                      ? 'Den ligger ikke på disken længere — den kan være ryddet væk.'
+                      : 'HTPC har ikke hentet den (endnu), så den kan kun ses hos DR TV:')}
+                  {videoNu?.tilstand === 'fundet' && (videoNu.fund?.filer ? 'Vælg afsnittet:' : "Se den på tv'et eller her.")}
+                </p>
+                {videoNu?.tilstand === 'fundet' && videoNu.fund && (
+                  videoNu.fund.filer ? (
+                    <ul className="video-filer">
+                      {videoNu.fund.filer.map((v) => (
+                        <li key={v.sti}>
+                          <span className="video-navn">{v.titel}</span>
+                          <button className="ghost tv" onClick={() => playVideoOnTv(v)} title="Afspil på tv'et i stuen">
+                            <IkonTv size={16} /> Tv
+                          </button>
+                          {phoneVideo(v, 'ghost', true)}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="video-valg">
+                      <button className="linkout-btn" onClick={() => playVideoOnTv(videoNu.fund!)}>
+                        <IkonTv size={18} /> Afspil på tv'et
+                      </button>
+                      {phoneVideo(videoNu.fund, 'linkout-btn alt')}
+                    </div>
+                  )
+                )}
+                {openEpisode.linkUrl && (
+                  <a className="linkout-btn dr" href={openEpisode.linkUrl} target="_blank" rel="noopener noreferrer">
+                    ↗ Åbn i {sourceOf(openEpisode) || 'DR TV'}
+                  </a>
+                )}
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    markHeard(openEpisode, !openEpisode.playedAt)
+                    setOpenEpisode({ ...openEpisode, playedAt: openEpisode.playedAt ? null : new Date().toISOString() })
+                  }}
+                >
+                  {openEpisode.playedAt ? '↺ Markér som ikke set' : '✓ Markér som set'}
                 </button>
               </div>
             ) : (
@@ -2068,13 +2422,7 @@ export default function App() {
                       ? <>📺 Dette er et <strong>TV-program</strong> og kan ikke afspilles i appen. Se det hos {sourceOf(openEpisode) || 'udbyderen'}:</>
                       : <>🔒 Dette afsnit kan ikke afspilles inde i appen — det ligger bag <strong>{sourceOf(openEpisode) || 'udbyderen'}</strong>. Åbn det direkte hos udbyderen:</>}
                 </p>
-                {openEpisode.kind === 'torrent' ? (
-                  tvUsable && openEpisode.rawName && (
-                    <button className="linkout-btn" onClick={() => playTorrentOnTv(openEpisode)}>
-                      <IkonTv size={18} /> Afspil på tv'et
-                    </button>
-                  )
-                ) : openEpisode.linkUrl ? (
+                {openEpisode.linkUrl ? (
                   <a className="linkout-btn" href={openEpisode.linkUrl} target="_blank" rel="noopener noreferrer">
                     ↗ Åbn hos {sourceOf(openEpisode) || 'udbyder'}
                   </a>
@@ -2102,11 +2450,32 @@ export default function App() {
       {/* Faste elementer nederst: en podcast på tv'et, afspilleren og korte beskeder. */}
       <div className="bund">
         {toast && <div className="toast" role="status">{toast}</div>}
-        {tvSession && tvPlaying?.podcast?.episodeId === tvSession.episodeId && tab !== 'stuen' && (
-          <button className="tvbjaelke" onClick={openStuen}>
-            <IkonTv size={16} /> <span>På tv'et: <b>{tvSession.title}</b></span>
-            <span className="tvbjaelke-tid">{fmtClock(tvPlaying.tid)}</span>
-          </button>
+        {/* En podcast på tv'et eller en højttaler: tryk for at styre den (pause, spol, lydstyrke,
+            fortsæt på telefonen). I Stuen står tv'ets egen fjernbetjening i forvejen. */}
+        {tvSession && (fjernNu?.spiller || fjernStarter) && !(tab === 'stuen' && (tvSession.maal || 'stuen') === 'stuen') && (
+          <div className="fjernbjaelke">
+            <button className="fjern-aabn" onClick={() => setFjernOpen(true)} title="Styr det, der spiller">
+              {(tvSession.maal || 'stuen') === 'stuen' ? <IkonTv size={17} /> : <IkonCast size={17} />}
+              <span className="fjern-tekst">
+                <small>{fjernNu?.spiller ? `På ${tvSession.maalNavn || "tv'et"}` : `${tvStat?.job?.trin || 'Starter'} …`}</small>
+                <b>{tvSession.title}</b>
+              </span>
+              {fjernNu?.spiller && (
+                <span className="fjern-tid">
+                  <FjernTid status={fjernNu} statusAt={tvStatAt} />
+                </span>
+              )}
+            </button>
+            {fjernNu?.spiller && (
+              <button
+                className="fjern-knap"
+                onClick={() => fjernKontrol(fjernNu.pause ? 'play' : 'pause')}
+                aria-label={fjernNu.pause ? 'Spil' : 'Pause'}
+              >
+                {fjernNu.pause ? <IkonPlay size={20} /> : <IkonPause size={20} />}
+              </button>
+            )}
+          </div>
         )}
         {current && (
           <MiniSpiller
@@ -2139,11 +2508,45 @@ export default function App() {
           onRate={cycleRate}
           sleepLeft={sleepLeft}
           onSleep={cycleSleep}
-          onTv={tvKnapForPodcast ? () => playOnTv({ ...current, positionSec: curTime }) : undefined}
+          onCast={tvKnapForPodcast ? () => openMaal({ ...current, positionSec: curTime }) : undefined}
           onInfo={() => { setSheetOpen(false); showEpisode(current) }}
           meta={[current.podcastTitle, fmtDate(current.publishedAt), current.durationSec ? fmtDur(current.durationSec) : '']
             .filter(Boolean)
             .join(' · ')}
+        />
+      )}
+
+      {maalFor && (
+        <MaalVaelger
+          titel={maalFor.title}
+          maal={maalListe}
+          henter={maalHenter}
+          onTelefon={() => {
+            const ep = maalFor
+            setMaalFor(null)
+            if (currentRef.current?.episodeId !== ep.episodeId) playEpisode(ep)
+          }}
+          onVaelg={(m) => playRemote(maalFor, m)}
+          onLuk={() => setMaalFor(null)}
+        />
+      )}
+
+      {fjernOpen && tvSession && (
+        <FjernSpiller
+          titel={tvSession.title}
+          billede={tvSession.image}
+          navn={tvSession.maalNavn || "Tv'et i stuen"}
+          tv={(tvSession.maal || 'stuen') === 'stuen'}
+          status={fjernNu}
+          statusAt={tvStatAt}
+          trin={fjernStarter ? tvStat?.job?.trin || 'Starter' : null}
+          onKontrol={fjernKontrol}
+          onTelefon={takeBack}
+          onStuen={() => {
+            setFjernOpen(false)
+            openStuen()
+          }}
+          onLuk={() => setFjernOpen(false)}
         />
       )}
 
@@ -2233,7 +2636,7 @@ function PodcastCard({
     delTimer.current = window.setTimeout(() => setConfirmDel(false), 4000)
   }
   return (
-    <div className="card">
+    <div className={`card ${fixed ? 'fast' : ''}`}>
       <button className="card-main" onClick={onOpen}>
         {podcast.image ? (
           <img src={podcast.image} alt="" loading="lazy" />
@@ -2335,10 +2738,13 @@ function EpisodeItem({
   const heard = !!ep.playedAt
   const art = ep.image || ep.podcastImage
   const playable = !!ep.audioUrl
-  // Torrents har hverken lyd eller link — de ligger på HTPC's disk og kan spilles på tv'et.
+  // Torrents har hverken lyd eller link — de ligger på HTPC's disk og spilles på tv'et eller
+  // telefonen. Udbyderen (Omny, Simplecast …) vises kun, når den betyder noget: når afsnittet
+  // ikke kan spilles her og skal ses eller høres hos den (DR TV, Viaplay, Podimo).
   const torrent = ep.kind === 'torrent'
-  const source = torrent ? 'Torrent' : sourceOf(ep)
   const tv = isTvEpisode(ep)
+  const source = torrent ? 'Torrent' : sourceOf(ep)
+  const showSource = !torrent && !playable && !!source
   // "DR TV" -> src-dr-tv (mellemrum i en className ville blive til to klasser)
   const srcClass = 'src-' + source.toLowerCase().replace(/\s+/g, '-')
   // fremdrift: brug live-tiden for det aktuelle afsnit, ellers den gemte position
@@ -2360,24 +2766,32 @@ function EpisodeItem({
   return (
     <li className={`episode ${heard ? 'heard' : ''} ${isCurrent ? 'current' : ''} ${started ? 'continuing' : ''} ${superNew ? `super s${stars}` : ''} ${unreachable ? 'unreachable' : ''}`}>
       <button
-        className={`ep-thumb ${playable ? '' : 'link'} ${torrent ? 'torrent' : ''}`}
+        className={`ep-thumb ${playable ? '' : 'link'} ${torrent || tv ? 'torrent' : ''}`}
         onClick={activate}
         title={
-          playable ? 'Afspil' : torrent ? "Hentet på HTPC — tryk for at spille den på tv'et" : `Kan ikke afspilles i appen — tryk for at åbne hos ${source || 'udbyder'}`
+          playable
+            ? 'Afspil'
+            : torrent || tv
+              ? "Video — tryk for at se den på tv'et eller telefonen"
+              : `Kan ikke afspilles i appen — tryk for at åbne hos ${source || 'udbyder'}`
         }
       >
         {art ? <img src={art} alt="" loading="lazy" /> : <span className={`ep-noimg ${torrent ? 'torrent' : ''}`}>{torrent ? '🧲' : ''}</span>}
         <span className={`ep-badge ${isCurrent && isPlaying ? 'live' : ''}`}>
-          {torrent ? '📺' : !playable ? '↗' : isCurrent && isPlaying ? <span className="eq" aria-label="Spiller"><i /><i /><i /></span> : '▶'}
+          {torrent || tv ? '📺' : !playable ? '↗' : isCurrent && isPlaying ? <span className="eq" aria-label="Spiller"><i /><i /><i /></span> : '▶'}
         </span>
       </button>
       <button className="ep-text" onClick={onInfo} title="Læs mere">
+        {/* Hvilken podcast det er, står for sig selv øverst (2026-11-17): billedet på et afsnit er
+            ofte ikke podcastens, så det var svært at se, hvad det var. */}
+        <span className="ep-pod">{torrent ? '🧲 Torrent' : ep.podcastTitle || source}</span>
         <strong>{ep.title}</strong>
+        {/* Mærkaterne brydes aldrig midt i ("#11 i DK", "DR TV", "Fortsætter" stod før på to linjer). */}
         <span className="ep-meta">
           {superNew && <em className="sup-chip" title={`Nyt afsnit fra en podcast med ${stars} stjerner`}>{'★'.repeat(stars)}</em>}
           {heard && (
             <em className="heard-chip" title="Markeret — tryk ✓ for at fjerne markeringen igen">
-              {torrent ? '✓ Set' : '✓ Hørt'}
+              {torrent || tv ? '✓ Set' : '✓ Hørt'}
             </em>
           )}
           {started && <em className="cont-chip" title="Du er i gang med dette afsnit">▶ Fortsætter</em>}
@@ -2386,13 +2800,12 @@ function EpisodeItem({
               🔥 #{chartRank} i DK
             </em>
           )}
-          {source && <em className={`src ${srcClass}`}>{tv ? '📺 ' : torrent ? '🧲 ' : ''}{source}</em>}
-          {ep.podcastTitle ? ep.podcastTitle + ' · ' : ''}
-          {fmtDate(ep.publishedAt)}
-          {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
-          {torrent
-            ? (ep.sizeBytes ? ' · ' + fmtBytes(ep.sizeBytes) : '') + ' · på HTPC'
-            : !playable && (tv ? ' · ses hos ' + source : ' · kun hos udbyder')}
+          {showSource && <em className={`src ${srcClass}`}>{tv ? '📺 ' : ''}{source}</em>}
+          <span className="ep-when">
+            {fmtDate(ep.publishedAt)}
+            {ep.durationSec ? ' · ' + fmtDur(ep.durationSec) : ''}
+            {torrent ? (ep.sizeBytes ? ' · ' + fmtBytes(ep.sizeBytes) : '') + ' · på HTPC' : !playable && !tv ? ' · kun hos udbyder' : ''}
+          </span>
         </span>
         {started && (
           <span className="ep-progress" title={`${fmtClock(pos)} af ${fmtClock(total)}`}>

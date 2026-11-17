@@ -1,7 +1,7 @@
 // Afspilleren: den lille bjælke nederst (altid synlig, når der står et afsnit) og den store
 // visning, der åbnes ved et tryk på bjælken — med stort cover, spoling, hastighed, sove-timer,
-// "spil på tv'et" og "luk". Kun visning: al tilstand og al lyd ligger i App.tsx.
-import { IkonFrem, IkonLuk, IkonMaane, IkonNed, IkonPause, IkonPlay, IkonTilbage, IkonTv } from './ikoner'
+// "afspil på …" og "luk". Kun visning: al tilstand og al lyd ligger i App.tsx.
+import { IkonCast, IkonFrem, IkonLuk, IkonMaane, IkonNed, IkonPause, IkonPlay, IkonTilbage } from './ikoner'
 import { fmtClock, fmtRate } from './lib/format'
 import type { EpisodeRow } from './types'
 
@@ -76,7 +76,7 @@ export function FuldSpiller({
   onRate,
   sleepLeft,
   onSleep,
-  onTv,
+  onCast,
   onInfo,
   meta,
 }: Faelles & {
@@ -88,7 +88,7 @@ export function FuldSpiller({
   onRate: () => void
   sleepLeft: number
   onSleep: () => void
-  onTv?: () => void
+  onCast?: () => void // "Afspil på …": tv'et eller en højttaler (kun hjemme)
   onInfo: () => void
   meta: string
 }) {
@@ -154,9 +154,9 @@ export function FuldSpiller({
           <button className={`pille ${sleepLeft > 0 ? 'on' : ''}`} onClick={onSleep} title="Sove-timer: pauser af sig selv">
             <IkonMaane size={15} /> {sleepLeft > 0 ? `${sleepLeft} min` : 'Sov'}
           </button>
-          {onTv && (
-            <button className="pille" onClick={onTv} title="Spil afsnittet på tv'et i stuen, fra hvor du er nu">
-              <IkonTv size={15} /> På tv'et
+          {onCast && (
+            <button className="pille" onClick={onCast} title="Spil afsnittet på tv'et eller en højttaler, fra hvor du er nu">
+              <IkonCast size={15} /> Afspil på …
             </button>
           )}
           <button className="pille" onClick={onInfo}>

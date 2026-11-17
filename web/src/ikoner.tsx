@@ -118,3 +118,17 @@ export const IkonOpdater = ({ size = 18, className }: P) =>
     <path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" />
     <path d="M20 20v-4h-4" />
   </>)
+
+// "Afspil på …": skærm med bølger i hjørnet, som Cast-symbolet alle kender
+export const IkonCast = ({ size = 22, className }: P) =>
+  svg(size, className, <>
+    <path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" />
+    <path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4" />
+    <path d="M3 20h.01" />
+  </>)
+
+export const IkonTelefon = ({ size = 22, className }: P) =>
+  svg(size, className, <>
+    <rect x="7" y="2.5" width="10" height="19" rx="2.5" />
+    <path d="M11 18.5h2" />
+  </>)
