@@ -49,6 +49,31 @@ er lette at snuble over.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
   `?action=migrate` én gang efter første deploy for at oprette tabeller.
 
+## 2026-11-17 (eftermiddag): fanen Lyd, torrent → tv, udgivelsesdatoer
+
+- **Fanen Lyd** (`Lyd.tsx`, sjette fane): Allans genveje fra BOOK6 (`sonos-tray`) på telefonen.
+  **Sonos** gennem `tv-helper` → `sonos_helper` (et kort pr. gruppe med cover, ▶/⏸, −/+ = alle rum
+  på samme lydstyrke ±2, forrige/næste; rum til og fra gruppen; favoritter og playlister) og
+  **radioen på Denon'en** med HEOS (▶/■, egen −/+, kanalerne DR P1-P8). Radio-logikken er flyttet
+  fra `sonos-tray` til `tv-helper` (`/api/radio`); se `tv/README.md`. Fanen spørger hvert 3.
+  sekund, kun mens den er åben og app'en fremme. `test/test_lyd.py`: 16 tjek med kun lydløse
+  handlinger (rum ud/ind, lydstyrke op og tilbage); radioens start/stop er afprøvet mod en falsk
+  Denon (`tv/htpc/test_radio.py`), fordi den rigtige spillede i stuen.
+- **"Afspil på tv'et" for en torrent fejlede** ("Kunne ikke starte afspilningen"): pop-up'en
+  sendte torrentens *mappe* (`fund.sti`) i stedet for videoen (`fund.afspil`), og `tv-helper`
+  svarede "ukendt fil". Telefonen brugte filens adresse og virkede. Rettet begge steder: siden
+  sender videoen, og `tv-helper` spiller en mappe med én video. Fejlteksten fra tv'et vises nu.
+- **Udgivelsesdatoerne passer** (tjekket 17/11, 29 RSS-feeds, 44 afsnit fra 10 døgn): alle findes
+  i appen med præcis kildens tidspunkt. **DR er særlig:** DR's offentlige RSS ligger 3-4 døgn efter
+  DR Lyd, og appen tager de fulde afsnit fra DR Lyd (via drpodcast.nu), så Genstart osv. står med
+  DR Lyd's dato og kommer **dage før** andre podcast-apps. DR's "TEASER"-afsnit erstattes af det
+  fulde afsnit på samme tidspunkt. **Hvor hurtigt:** almindelige podcasts når appen efter median
+  10 min. (cron hvert 10. min.). Et DR-afsnit står som "kun i DR Lyd" inden for en time
+  (`run_dr.sh` kl. :17) og kan afspilles, når drpodcast.nu har det, typisk 2-3 timer efter DR's
+  angivne tidspunkt (Akkurat med Clement søndag 15/11: på DR Lyd kl. ca. 15, afspillelig ca. 18).
+- **Ønsket til senere, ikke bygget:** torrents uden for huset (kræver en tunnel som Tailscale).
+- **Soveværelsets tv** (en ProSonic) er droppet: det er helt væk fra nettet, når det er slukket.
+
 ## 2026-11-17: Afspil på …, video fra HTPC, notifikationer, selvopdatering
 
 Udløst af en lang liste fra Allan. Alt afprøvet, også på det rigtige tv og en rigtig højttaler
