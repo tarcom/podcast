@@ -49,6 +49,31 @@ er lette at snuble over.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
   `?action=migrate` én gang efter første deploy for at oprette tabeller.
 
+## 2026-11-24 (aften): Android-app'en spiller selv lyden (3.3)
+
+Et opkald på gåturen 24/11 satte lyden på pause, og bagefter kom den først igen, da app'en blev
+åbnet: siden (WebView'ens proces) sov under opkaldet. Fra Android-app'en 3.3 spiller app'en lyden
+med ExoPlayer (`podcast-android/.../Lyd.kt`), og **`web/src/lib/nativlyd.ts`** gør `<audio>` til
+en fjernbetjening af den: `installerNativLyd(el)` (fra `audioRefCb` i `App.tsx`) erstatter
+elementets `src`, `play()`, `pause()`, `currentTime`, `paused`, `duration`, `readyState`,
+`networkState`, `error`, `buffered` og `playbackRate`, sender kommandoer med `AndroidHost.lyd(json)`
+og laver app'ens tilstand (`window.__dkPodLyd`) om til elementets egne hændelser. Resten af
+afspilleren i `App.tsx` er uændret, og i en browser eller med en ældre app sker der intet.
+
+- `nativAfsnit()` (i `playEpisode` og ved genskabelse) fortæller app'en afsnittets titel, billede og
+  id'er: notifikationen, og app'en gemmer selv positionen (`state.set`). `nativSove()` lægger
+  sove-timeren i app'en. Begge holder, selvom siden sover.
+- `erNativ(el)`: sidens vagt og den forebyggende genindlæsning efter 30 min. pause er slået fra dér,
+  for app'en prøver selv igen i ca. 10 min. og har op til 10 min. lyd hentet foran.
+- **Hentede afsnit** (service workerens cache `nordpod-audio-v1`) spiller siden selv som før
+  (`__dkPodModus = 'web'`), fordi app'en ikke kan læse cachen.
+- Indlæses siden igen, mens app'en spiller (sidens proces døde), overtager den afsnittet
+  (`AndroidHost.lydTilstand()`) i stedet for at starte forfra.
+- Loggen får `lyd:nativ`, `lyd:modus` og fra app'en `n:lyd-kilde`, `n:lyd-fejl`, `n:lyd-genoptag`,
+  `n:fokus` (opkald: `tabt` true/false), `n:lyd-noisy`, `n:lyd-sove`, `n:lyd-slut`, `n:modus`.
+- Test: `podcast-android/test/test_android.py nativ` (28) og `hentet` (15); browseren uændret
+  (`test_web.py` 27, `test_genoptag.py` 33).
+
 ## 2026-11-24 (eftermiddag): log over afspilningen — "hvad gik galt?"
 
 Telefonens egen log rakte kun en time tilbage, så det, der gik galt i bilen, var væk. Nu logger

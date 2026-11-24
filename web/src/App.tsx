@@ -49,6 +49,7 @@ import { aabnVideoIApp, APK_URL, appOutdated, host, inAndroidApp, kanOpdatereSel
 import { clearNowPlaying, readNowPlaying, saveNowPlaying } from './lib/nowplaying'
 import { loadPref, savePref } from './lib/prefs'
 import { logg } from './lib/logg'
+import { erNativ, installerNativLyd, nativAfsnit, nativSove } from './lib/nativlyd'
 import {
   jobIGang,
   tvAfspil,
@@ -448,6 +449,12 @@ export default function App() {
 
   // player — afsnittet fra sidste gang står klar på pause (lib/nowplaying.ts)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  // I Android-app'en (fra 3.3) spiller app'en selv lyden, og <audio> bliver en fjernbetjening af
+  // den (lib/nativlyd.ts). Resten af afspilleren her er den samme i app'en og i en browser.
+  const audioRefCb = useCallback((el: HTMLAudioElement | null) => {
+    audioRef.current = el
+    if (el) installerNativLyd(el)
+  }, [])
   const [current, setCurrent] = useState<EpisodeRow | null>(() =>
     RESTORED ? { ...RESTORED.ep, positionSec: RESTORED.pos } : null,
   )
@@ -830,7 +837,7 @@ export default function App() {
     if (!el.getAttribute('src')) {
       el.src = ep.audioUrl
       el.currentTime = ep.positionSec || 0
-    } else if (doed || haengt || (navigator.onLine && pauseMs > LANG_PAUSE_MS)) {
+    } else if (doed || haengt || (navigator.onLine && pauseMs > LANG_PAUSE_MS && !erNativ(el))) {
       // Forbindelsen til lyden er tabt eller hænger (så ville play() bare stå stille), eller der
       // er pauset så længe, at forbindelsen er lukket, og CDN-adressen kan være udløbet: forfra.
       genindlaes(false, doed ? 'doed' : haengt ? 'haenger' : 'lang-pause')
@@ -854,9 +861,14 @@ export default function App() {
     if (!RESTORED || !el || el.getAttribute('src')) return
     el.preload = 'metadata'
     el.defaultPlaybackRate = rateRef.current
-    el.src = RESTORED.ep.audioUrl!
+    const ep = RESTORED.ep
+    nativAfsnit({
+      episodeId: ep.episodeId, feedId: ep.feedId, deviceId, durationSec: ep.durationSec,
+      titel: ep.title, podcast: ep.podcastTitle, billede: ep.image || ep.podcastImage,
+    })
+    el.src = ep.audioUrl!
     syncFromServer()
-  }, [syncFromServer])
+  }, [syncFromServer, deviceId])
 
   // ---------- ny udgave af siden ----------
   const checkVersion = useCallback(async () => {
@@ -1492,6 +1504,10 @@ export default function App() {
     window.setTimeout(() => {
       const el = audioRef.current
       if (el) {
+        nativAfsnit({
+          episodeId: ep.episodeId, feedId: ep.feedId, deviceId, durationSec: ep.durationSec,
+          titel: ep.title, podcast: ep.podcastTitle, billede: ep.image || ep.podcastImage,
+        })
         el.src = ep.audioUrl!
         el.defaultPlaybackRate = rateRef.current
         el.playbackRate = rateRef.current
@@ -1499,7 +1515,7 @@ export default function App() {
         el.play().catch(() => setPlaying(false))
       }
     }, 0)
-  }, [online, dlIds, resume, savePositionNow])
+  }, [online, dlIds, resume, savePositionNow, deviceId])
 
   // NB: "✓ ryd herunder" (bulk-markér en dag + alt ældre som hørt) er fjernet 2026-08-23.
   // Køen er bevidst en lang liste man plukker fra — ikke en indbakke der skal tømmes — så
@@ -1686,6 +1702,10 @@ export default function App() {
     const iv = window.setInterval(tick, 5000)
     return () => window.clearInterval(iv)
   }, [sleepUntil])
+  // I app'en (3.3) holder app'en også øje med sove-timeren: siden kan sove, mens lyden spiller
+  useEffect(() => {
+    nativSove(sleepUntil)
+  }, [sleepUntil])
 
   // Vagten: skal lyden spille, men står den stille og venter på data i over STAAR_STILLE_MS, hentes
   // den forfra. En forbindelse, der hænger efter et hul i dækningen, giver ingen fejl, så den ville
@@ -1699,8 +1719,9 @@ export default function App() {
     const iv = window.setInterval(() => {
       const el = audioRef.current
       if (++tik % 60 === 0 && el && !el.paused) logg('lyt', { ...lydInfo(el, currentRef.current), rate: el.playbackRate })
+      // I app'en (3.3) prøver app'ens afspiller selv igen i op til 10 min., så vagten er overflødig
       const venter =
-        !!el && !el.paused && !el.ended && wantPlay.current && navigator.onLine &&
+        !!el && !erNativ(el) && !el.paused && !el.ended && wantPlay.current && navigator.onLine &&
         el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA && el.currentTime === sidst
       sidst = el ? el.currentTime : -1
       if (!venter) {
@@ -2752,7 +2773,7 @@ export default function App() {
       )}
 
       <audio
-        ref={audioRef}
+        ref={audioRefCb}
         onEnded={() => {
           logg('lyd:slut', lydInfo(audioRef.current, currentRef.current))
           onEnded()
