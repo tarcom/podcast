@@ -48,6 +48,7 @@ import { pushBack } from './lib/back'
 import { aabnVideoIApp, APK_URL, appOutdated, host, inAndroidApp, kanOpdatereSelv, LATEST_APK, nativeClosePlayer } from './lib/native'
 import { clearNowPlaying, readNowPlaying, saveNowPlaying } from './lib/nowplaying'
 import { loadPref, savePref } from './lib/prefs'
+import { logg } from './lib/logg'
 import {
   jobIGang,
   tvAfspil,
@@ -145,6 +146,33 @@ function lydDoed(el: HTMLAudioElement): boolean {
 function haenger(el: HTMLAudioElement, ventetFra: number): boolean {
   return ventetFra > 0 && el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
 }
+// Lydens tilstand til loggen (lib/logg.ts), kort: afsnit, position, readyState, networkState,
+// fejlkode og hvor mange sekunder der er hentet foran.
+function lydInfo(el: HTMLAudioElement | null, ep: EpisodeRow | null): Record<string, unknown> {
+  if (!el) return { ep: ep?.episodeId }
+  const d: Record<string, unknown> = { ep: ep?.episodeId, pos: Math.round(el.currentTime), rs: el.readyState, ns: el.networkState }
+  if (el.error) d.err = el.error.code
+  try {
+    const b = el.buffered
+    for (let i = 0; i < b.length; i++) {
+      if (b.start(i) <= el.currentTime + 0.5 && b.end(i) >= el.currentTime) {
+        d.buf = Math.round(b.end(i) - el.currentTime)
+        break
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return d
+}
+const vaertAf = (url?: string) => {
+  try {
+    return url ? new URL(url).host : undefined
+  } catch {
+    return undefined
+  }
+}
+if (RESTORED) logg('genskabt', { ep: RESTORED.ep.episodeId, pos: RESTORED.pos, titel: RESTORED.ep.title })
 // Faldt lyden ud, mens man lyttede: prøv igen efter 1, 2, 4, 8, 15 og 30 sek., derefter hvert 45.,
 // og med det samme, når nettet er tilbage. Tæt i starten: når dækningen kommer igen, kan nettet
 // være et stykke tid om at virke (i emulatoren op mod en halv minut efter flytilstand).
@@ -650,6 +678,7 @@ export default function App() {
   const closePlayer = useCallback(
     (save = true) => {
       const el = audioRef.current
+      logg('luk', { ...lydInfo(el, currentRef.current), gem: save ? 1 : 0 })
       if (save) savePositionNow()
       closing.current = true
       wantPlay.current = false
@@ -725,6 +754,7 @@ export default function App() {
     }
     const here = el.readyState > 0 ? el.currentTime : ep.positionSec || 0
     if (Math.abs(st.positionSec - here) < 5) return
+    logg('synk', { ep: ep.episodeId, fra: Math.round(here), til: st.positionSec })
     // Også før lyden er indlæst: så bliver det startpositionen (fx mens den hentes forfra).
     el.currentTime = st.positionSec
     setCurTime(st.positionSec)
@@ -736,12 +766,13 @@ export default function App() {
   // Hent lyden forfra fra afsnittets egen adresse, og fortsæt, hvor den slap. Bruges, når
   // forbindelsen til lyden er tabt (se lydDoed øverst): det døde element kan ikke startes igen.
   // Positionen sættes, før lyden er indlæst, og gælder så som startposition.
-  const genindlaes = useCallback((spil: boolean) => {
+  const genindlaes = useCallback((spil: boolean, hvorfor: string) => {
     const el = audioRef.current
     const ep = currentRef.current
     if (!el || !ep?.audioUrl) return
     window.clearTimeout(forsoegTimer.current)
     const pos = el.currentTime > 0 ? el.currentTime : sidstePos.current || ep.positionSec || 0
+    logg('genindlaes', { ...lydInfo(el, ep), hvorfor, forsoeg: forsoeg.current || undefined, host: vaertAf(ep.audioUrl) })
     ventetFra.current = 0
     el.src = ep.audioUrl
     el.currentTime = pos
@@ -756,10 +787,11 @@ export default function App() {
   // Har den været væk i over OPGIV_MS, gives der op: afsnittet står på pause, og et tryk på afspil
   // prøver forfra.
   const proevIgen = useCallback(
-    (straks = false) => {
+    (straks: boolean, hvorfor: string) => {
       window.clearTimeout(forsoegTimer.current)
       if (!wantPlay.current || !currentRef.current) return
       if (fejlFra.current && Date.now() - fejlFra.current > OPGIV_MS) {
+        logg('opgivet', { ...lydInfo(audioRef.current, currentRef.current), min: Math.round((Date.now() - fejlFra.current) / 60000), forsoeg: forsoeg.current })
         wantPlay.current = false
         fejlFra.current = 0
         audioRef.current?.pause()
@@ -771,7 +803,7 @@ export default function App() {
       const ms = straks ? 0 : FORSOEG_MS[Math.min(forsoeg.current, FORSOEG_MS.length - 1)]
       forsoeg.current++
       forsoegTimer.current = window.setTimeout(() => {
-        if (wantPlay.current && currentRef.current) genindlaes(true)
+        if (wantPlay.current && currentRef.current) genindlaes(true, hvorfor)
       }, ms)
     },
     [genindlaes, showToast],
@@ -781,7 +813,9 @@ export default function App() {
   // er der, spoles der dertil bagefter. Før ventede afspilningen på svaret, og i en side der har
   // ligget skjult i over 5 min. udskyder Chromium timere med op til et minut, så PLAY fra
   // notifikationen eller bilen kunne tage lang tid (fundet i emulatoren 16/11).
-  const resume = useCallback(async () => {
+  // `kilde` står i loggen: 'ui' (knapperne), 'ms' (Media Session: notifikation, låseskærm, bil),
+  // 'koe' (et tryk på afsnittet i køen), 'tv' (Fortsæt på telefonen).
+  const resume = useCallback(async (kilde: string = 'ui') => {
     const el = audioRef.current
     const ep = currentRef.current
     if (!el || !ep?.audioUrl) return
@@ -789,17 +823,17 @@ export default function App() {
     forsoeg.current = 0
     fejlFra.current = 0
     const sync = navigator.onLine && Date.now() - lastSync.current > 60_000
+    const doed = lydDoed(el)
+    const haengt = haenger(el, ventetFra.current)
+    const pauseMs = pauseFra.current > 0 ? Date.now() - pauseFra.current : 0
+    logg('afspil', { kilde, ...lydInfo(el, ep), pauseMin: pauseMs ? Math.round(pauseMs / 60000) : undefined })
     if (!el.getAttribute('src')) {
       el.src = ep.audioUrl
       el.currentTime = ep.positionSec || 0
-    } else if (
-      lydDoed(el) ||
-      haenger(el, ventetFra.current) ||
-      (navigator.onLine && pauseFra.current > 0 && Date.now() - pauseFra.current > LANG_PAUSE_MS)
-    ) {
+    } else if (doed || haengt || (navigator.onLine && pauseMs > LANG_PAUSE_MS)) {
       // Forbindelsen til lyden er tabt eller hænger (så ville play() bare stå stille), eller der
       // er pauset så længe, at forbindelsen er lukket, og CDN-adressen kan være udløbet: forfra.
-      genindlaes(false)
+      genindlaes(false, doed ? 'doed' : haengt ? 'haenger' : 'lang-pause')
     }
     el.defaultPlaybackRate = rateRef.current
     el.playbackRate = rateRef.current
@@ -840,6 +874,7 @@ export default function App() {
     const el = audioRef.current
     if (el && !el.paused) return false
     savePositionNow()
+    logg('ny-udgave')
     window.location.reload()
     return true
   }, [savePositionNow])
@@ -1056,7 +1091,7 @@ export default function App() {
       refreshAll(true)
       // Faldt lyden ud (eller hænger den), mens der ikke var net, fortsætter den nu.
       const el = audioRef.current
-      if (wantPlay.current && el && el.getAttribute('src') && (lydDoed(el) || haenger(el, ventetFra.current))) proevIgen(true)
+      if (wantPlay.current && el && el.getAttribute('src') && (lydDoed(el) || haenger(el, ventetFra.current))) proevIgen(true, 'online')
     }
     const goOffline = () => setOnline(false)
     window.addEventListener('online', goOnline)
@@ -1427,11 +1462,15 @@ export default function App() {
     }
     // Er det afsnittet, der allerede står i afspilleren, er det bare en genoptagelse.
     if (currentRef.current?.episodeId === ep.episodeId && audioRef.current?.getAttribute('src')) {
-      resume()
+      resume('koe')
       return
     }
     // Skiftes der afsnit midt i et andet, gemmes det gamles plads først.
     if (currentRef.current && currentRef.current.episodeId !== ep.episodeId) savePositionNow()
+    logg('afsnit', {
+      ep: ep.episodeId, feed: ep.feedId, titel: ep.title, podcast: ep.podcastTitle,
+      pos: ep.positionSec || 0, dur: ep.durationSec, host: vaertAf(ep.audioUrl), hentet: dlIds.has(ep.episodeId) ? 1 : 0,
+    })
     setPlayErrorId(0)
     window.clearTimeout(forsoegTimer.current)
     lydVirkede.current = 0
@@ -1508,8 +1547,9 @@ export default function App() {
     const el = audioRef.current
     if (!el) return
     if (el.paused || lydDoed(el)) {
-      resume()
+      resume('ui')
     } else {
+      logg('pause', { kilde: 'ui', ...lydInfo(el, currentRef.current) })
       wantPlay.current = false
       el.pause()
       setPlaying(false)
@@ -1541,6 +1581,7 @@ export default function App() {
     if (!el) return
     const base = el.readyState > 0 ? el.currentTime : currentRef.current?.positionSec || 0
     const target = Math.min(el.duration || Infinity, Math.max(0, base + delta))
+    logg('spol', { ep: currentRef.current?.episodeId, delta, til: Math.round(target) })
     el.currentTime = target
     setCurTime(target)
     syncPositionState()
@@ -1553,6 +1594,7 @@ export default function App() {
   }, [])
   const onSeekCommit = useCallback((v: number) => {
     const el = audioRef.current
+    logg('spol', { ep: currentRef.current?.episodeId, fra: el ? Math.round(el.currentTime) : undefined, til: Math.round(v), kilde: 'slider' })
     if (el) el.currentTime = v
     setCurTime(v)
     setSeeking(false)
@@ -1578,15 +1620,20 @@ export default function App() {
         artwork: art ? [96, 192, 512].map((sz) => ({ src: art, sizes: `${sz}x${sz}`, type: 'image/jpeg' })) : [],
       })
     }
-    ms.setActionHandler('play', () => { resume() })
-    ms.setActionHandler('pause', () => { wantPlay.current = false; audioRef.current?.pause(); setPlaying(false) })
+    ms.setActionHandler('play', () => { resume('ms') })
+    ms.setActionHandler('pause', () => {
+      logg('pause', { kilde: 'ms', ...lydInfo(audioRef.current, currentRef.current) })
+      wantPlay.current = false
+      audioRef.current?.pause()
+      setPlaying(false)
+    })
     // hold-nede-knapper i nogle biler/headsets
     ms.setActionHandler('seekbackward', () => skip(-10))
     ms.setActionHandler('seekforward', () => skip(30))
     // enkelt-tryk på frem/tilbage (Tesla-skærmen, rattet, headset)
     ms.setActionHandler('previoustrack', () => skip(-10))
     ms.setActionHandler('nexttrack', () => skip(30))
-    try { ms.setActionHandler('seekto', (d) => { const el = audioRef.current; if (el && d.seekTime != null) { el.currentTime = d.seekTime; setCurTime(d.seekTime); syncPositionState() } }) } catch { /* ikke understøttet */ }
+    try { ms.setActionHandler('seekto', (d) => { const el = audioRef.current; if (el && d.seekTime != null) { logg('spol', { ep: currentRef.current?.episodeId, til: Math.round(d.seekTime), kilde: 'ms' }); el.currentTime = d.seekTime; setCurTime(d.seekTime); syncPositionState() } }) } catch { /* ikke understøttet */ }
     return () => {
       for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'nexttrack', 'previoustrack'] as const) {
         try { ms.setActionHandler(a, null) } catch { /* ignore */ }
@@ -1626,6 +1673,7 @@ export default function App() {
     const tick = () => {
       const left = sleepUntil - Date.now()
       if (left <= 0) {
+        logg('sove', lydInfo(audioRef.current, currentRef.current))
         wantPlay.current = false
         audioRef.current?.pause()
         setPlaying(false)
@@ -1641,13 +1689,16 @@ export default function App() {
 
   // Vagten: skal lyden spille, men står den stille og venter på data i over STAAR_STILLE_MS, hentes
   // den forfra. En forbindelse, der hænger efter et hul i dækningen, giver ingen fejl, så den ville
-  // ellers kunne stå sådan i minutter.
+  // ellers kunne stå sådan i minutter. Den skriver også "lyt" i loggen hvert 5. minut, mens der
+  // spilles, så lyttetiden kan regnes ud, selv hvis siden bliver lukket midt i.
   useEffect(() => {
     if (!playing) return
     let sidst = -1
     let siden = 0
+    let tik = 0
     const iv = window.setInterval(() => {
       const el = audioRef.current
+      if (++tik % 60 === 0 && el && !el.paused) logg('lyt', { ...lydInfo(el, currentRef.current), rate: el.playbackRate })
       const venter =
         !!el && !el.paused && !el.ended && wantPlay.current && navigator.onLine &&
         el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA && el.currentTime === sidst
@@ -1660,7 +1711,7 @@ export default function App() {
       else if (Date.now() - siden >= STAAR_STILLE_MS) {
         if (!fejlFra.current) fejlFra.current = siden
         siden = 0
-        proevIgen(true)
+        proevIgen(true, 'vagt')
       }
     }, 5000)
     return () => window.clearInterval(iv)
@@ -1675,6 +1726,7 @@ export default function App() {
       if (!ep.audioUrl) return
       const el = audioRef.current
       let start = ep.positionSec || 0
+      logg('fjern', { ep: ep.episodeId, maal: maal.id })
       if (currentRef.current?.episodeId === ep.episodeId && el) {
         start = el.readyState > 0 ? el.currentTime : start
         if (!el.paused) {
@@ -1883,7 +1935,7 @@ export default function App() {
     if (currentRef.current?.episodeId === ep.episodeId && el?.getAttribute('src')) {
       el.currentTime = pos
       setCurTime(pos)
-      resume()
+      resume('tv')
     } else {
       playEpisode({ ...ep, positionSec: pos })
     }
@@ -2701,10 +2753,14 @@ export default function App() {
 
       <audio
         ref={audioRef}
-        onEnded={onEnded}
+        onEnded={() => {
+          logg('lyd:slut', lydInfo(audioRef.current, currentRef.current))
+          onEnded()
+        }}
         onTimeUpdate={() => {
           onTimeUpdate()
           if (sleepUntil && Date.now() >= sleepUntil) {
+            logg('sove', lydInfo(audioRef.current, currentRef.current))
             wantPlay.current = false
             audioRef.current?.pause()
             setSleepUntil(null)
@@ -2712,12 +2768,18 @@ export default function App() {
           }
         }}
         onPlay={() => {
+          logg('lyd:play', lydInfo(audioRef.current, currentRef.current))
           setPlaying(true)
           pauseFra.current = 0
           stopKeepAlive() // der spiller rigtig lyd nu — stilheden har gjort sit
           syncPositionState()
         }}
         onPlaying={() => {
+          logg('lyd:spiller', {
+            ...lydInfo(audioRef.current, currentRef.current),
+            ventetMs: ventetFra.current ? Date.now() - ventetFra.current : undefined,
+            forsoeg: forsoeg.current || undefined,
+          })
           // Lyden spiller (igen): falder den ud senere, er det forbindelsen, ikke afsnittet.
           lydVirkede.current = currentRef.current?.episodeId || 0
           window.clearTimeout(forsoegTimer.current)
@@ -2726,9 +2788,12 @@ export default function App() {
           ventetFra.current = 0
         }}
         onWaiting={() => {
+          logg('lyd:venter', lydInfo(audioRef.current, currentRef.current))
           if (!ventetFra.current) ventetFra.current = Date.now()
         }}
+        onStalled={() => logg('lyd:stalled', lydInfo(audioRef.current, currentRef.current))}
         onPause={() => {
+          logg('lyd:pause', lydInfo(audioRef.current, currentRef.current))
           setPlaying(false)
           const el = audioRef.current
           // Slutningen af et afsnit er også en "pause" — der er intet at holde i live der.
@@ -2744,14 +2809,19 @@ export default function App() {
           const el = audioRef.current
           const ep = currentRef.current
           if (!el || !ep?.audioUrl || closing.current || !el.getAttribute('src')) return
+          const forbindelsen = lydVirkede.current === ep.episodeId || !navigator.onLine
+          logg('lyd:fejl', {
+            ...lydInfo(el, ep), besked: el.error?.message, host: vaertAf(ep.audioUrl),
+            kurs: forbindelsen ? (wantPlay.current ? 'proev-igen' : 'paa-pause') : wantPlay.current ? 'kan-ikke' : 'stille',
+          })
           // Har afsnittet spillet i denne omgang, eller er der intet net, er det forbindelsen, der er
           // gået tabt (dårlig dækning i bilen, en udløbet CDN-adresse), ikke afsnittet, der ikke kan
           // afspilles. Så hentes lyden forfra, når der er net igen (se lydDoed øverst i filen).
-          if (lydVirkede.current === ep.episodeId || !navigator.onLine) {
+          if (forbindelsen) {
             if (!el.paused) el.pause() // ellers viser bilen og låseskærmen "spiller", mens den står stille
             if (!wantPlay.current) return // på pause: et tryk på afspil henter den forfra (resume)
             if (!fejlFra.current) fejlFra.current = Date.now()
-            proevIgen()
+            proevIgen(false, 'fejl')
             return
           }
           // lyd kunne ikke afspilles (fx DR app-only/geo) → vis link-out-pop-up. Kun hvis man
@@ -2766,6 +2836,7 @@ export default function App() {
           const el = audioRef.current
           const ep = currentRef.current
           if (ep) lydVirkede.current = ep.episodeId
+          logg('lyd:metadata', { ...lydInfo(el, ep), dur: el && isFinite(el.duration) ? Math.round(el.duration) : undefined })
           if (el && ep && ep.positionSec && el.currentTime < 1) el.currentTime = ep.positionSec
           if (el && el.duration && isFinite(el.duration)) setDur(el.duration)
           syncPositionState()

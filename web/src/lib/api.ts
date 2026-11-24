@@ -274,6 +274,13 @@ export async function setState(
 
 // Bulk: markér mange afsnit hørt/uhørt på én gang. Frontenden bruger den ikke lige nu —
 // "✓ ryd herunder" er fjernet 2026-08-23 — men endpointet står ved lige på serveren.
+// Et bundt hændelser fra loggen (lib/logg.ts → api/logg.php). Går gennem samme loft på 2 samtidige
+// kald som resten, så loggen aldrig gør et rigtigt kald et sekund langsommere hos one.com.
+export async function sendLog(body: unknown): Promise<void> {
+  const { data } = await apiPost(body, { action: 'log.add' })
+  if (!data || data.status !== true) throw new Error('log.add svarede ikke ok')
+}
+
 export async function setStateMany(
   deviceId: string,
   episodes: { episodeId: number; feedId: number }[],

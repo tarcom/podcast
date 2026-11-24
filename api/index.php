@@ -12,6 +12,7 @@ require __DIR__ . '/drtv.php';
 require __DIR__ . '/viaplay.php';
 require __DIR__ . '/drpodcast.php';
 require __DIR__ . '/torrents.php';
+require __DIR__ . '/logg.php';
 
 $action = $_GET['action'] ?? 'health';
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
@@ -85,6 +86,7 @@ try {
                 }
             }
             torrent_tables($pdo);
+            logg_tables($pdo);
             json_response(['status' => true, 'message' => 'migrated', 'columnsAdded' => $added]);
 
         // Flet alle enheders data ind i ét fast single-user-id (indtil login).
@@ -602,6 +604,16 @@ try {
             }
             $pdo = db($config);
             json_response(['status' => true] + podcast_dedupe_episodes($pdo));
+
+        // Log over afspilningen (api/logg.php): skrivning er åben, læsning kræver X-Log-Key.
+        case 'log.add':
+            if ($method !== 'POST') {
+                json_response(['status' => false, 'error' => 'Method not allowed'], 405);
+            }
+            logg_add($config, $body);
+
+        case 'log.list':
+            logg_list($config);
 
         default:
             json_response(['status' => false, 'error' => 'Unknown action'], 404);

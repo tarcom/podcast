@@ -15,6 +15,7 @@ Tager 6-8 minutter: Chromium prøver selv i ca. 30 sek., før det giver op.
   3. På pause, fejl imens, så afspil: henter lyden forfra og spiller (det, Allan oplevede 24/11)
   4. Et nyt afsnit, der slet ikke kan hentes: pop-up'en "kunne ikke afspilles" som før
   5. Forbindelsen hænger uden fejl: vagten henter lyden forfra
+  6. Loggen (lib/logg.ts): alt ovenfor står i test-enhedens log på serveren, også det fra offline-tiden
 """
 import json
 import os
@@ -34,6 +35,19 @@ RESULT = []
 def ok(cond, msg):
     RESULT.append((bool(cond), msg))
     print(('OK   ' if cond else 'FEJL ') + msg, flush=True)
+
+
+def logg_fra_server(fra_ms):
+    """Test-enhedens log fra serveren (log.list kræver ingest-nøglen fra api/config.php)."""
+    import pathlib
+    import re
+    import urllib.request
+    cfg = (pathlib.Path(__file__).resolve().parent.parent / 'api' / 'config.php').read_text()
+    key = re.search(r"'ingest_key'\s*=>\s*'([0-9a-f]+)'", cfg).group(1)
+    req = urllib.request.Request(
+        f'https://aogj.com/podcast/api/index.php?action=log.list&deviceId=claude-test&fra={fra_ms}',
+        headers={'X-Log-Key': key, 'User-Agent': 'AllDKPodcastsTest/1.0'})
+    return json.load(urllib.request.urlopen(req, timeout=60))['items']
 
 
 def wait(fn, timeout=15, step=0.5):
@@ -148,6 +162,7 @@ def shot(navn):
     d.save_screenshot(os.path.join(SHOTS, 'genoptag-' + navn + '.png'))
 
 
+T0 = int(time.time() * 1000) - 5000  # loggen læses fra hertil (tjek 6)
 try:
     cdp('Network.enable', {})
     cdp('Network.setBypassServiceWorker', {'bypass': True})
@@ -228,6 +243,23 @@ try:
     ok(s, f'5: spiller igen efter {time.time() - t0:.0f} sek., fra {s and s["t"]} (stod ved {maal})')
     ok(not lyd()['popup'], '5: ingen pop-up')
     d.find_element(By.CSS_SELECTOR, '.mini-play').click()
+
+    # ---------- 6. loggen (lib/logg.ts → api/logg.php) ----------
+    for _ in range(4):  # 200 hændelser pr. bundt
+        js("return window.__dkPodLogSend && window.__dkPodLogSend()")
+        time.sleep(2)
+    items = wait(lambda: (lambda it: it if len(it) > 30 else None)(logg_fra_server(T0)), 40, 4) or []
+    typer = {i['type'] for i in items}
+    print(f'   loggen: {len(items)} hændelser, typer: {sorted(typer)}')
+    for t in ['start', 'afsnit', 'afspil', 'pause', 'lyd:spiller', 'lyd:venter', 'lyd:fejl', 'genindlaes', 'offline', 'online']:
+        ok(t in typer, f'6: loggen har "{t}"')
+    hvorfor = {(i['data'] or {}).get('hvorfor') for i in items if i['type'] == 'genindlaes'}
+    ok({'fejl', 'online', 'doed', 'vagt'} <= hvorfor, f'6: genindlæsningerne står med grund: {sorted(h for h in hvorfor if h)}')
+    kurs = {(i['data'] or {}).get('kurs') for i in items if i['type'] == 'lyd:fejl'}
+    ok({'proev-igen', 'kan-ikke'} <= kurs, f'6: fejlene står med hvad der skete bagefter: {sorted(k for k in kurs if k)}')
+    ok(any((i['data'] or {}).get('off') for i in items), '6: hændelser fra offline-tiden nåede frem bagefter')
+    kilder = {(i['data'] or {}).get('kilde') for i in items if i['type'] in ('afspil', 'pause')}
+    ok({'ui', 'koe'} & kilder, f'6: afspil og pause står med kilde: {sorted(k for k in kilder if k)}')
 finally:
     try:
         shot('slut')

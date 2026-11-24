@@ -7,6 +7,8 @@
 //                     hvis Android dræber den, signalerer forgrund/baggrund, broen til Stuen.
 //   3.1               video fra HTPC i telefonens egen afspiller (aabnVideo), notifikationer om
 //                     nye afsnit med ★★★, og app'en ser selv efter en ny udgave (opdater).
+//   3.2               sin egen log (loggHent, signalet dkpod:logg): kommandoer og deres afsender
+//                     (bilen, notifikationen), sidens proces lukket, swipe, hvorfor processen døde.
 type AndroidHost = {
   luk?: () => void
   version?: () => string
@@ -15,6 +17,8 @@ type AndroidHost = {
   opdater?: () => void
   /** Afsnittet fra en notifikation, der er trykket på: JSON {id, feedId, afspil} eller '' (tømmes). */
   ventendeAfsnit?: () => string
+  /** Fra 3.2: app'ens egne loghændelser siden sidst, som JSON-liste (tømmes). Se lib/logg.ts. */
+  loggHent?: () => string
 }
 
 export const host: AndroidHost | undefined =
@@ -25,6 +29,8 @@ const UA_MATCH =
 export const inAndroidApp = !!UA_MATCH
 /** Hovedversionen af Android-app'en, eller null i en almindelig browser. */
 export const appVersion: number | null = UA_MATCH ? Number(UA_MATCH[1]) : null
+/** Hele versionen som tekst ("3.1.0"), eller '' i en almindelig browser. Står i loggen. */
+export const appVersionTekst = UA_MATCH ? [UA_MATCH[1], UA_MATCH[2] || '0', UA_MATCH[3] || '0'].join('.') : ''
 /** Hele versionen som ét tal (3.1.0 -> 30100), så den kan sammenlignes. */
 const appVersionNum = UA_MATCH ? Number(UA_MATCH[1]) * 10000 + Number(UA_MATCH[2] || 0) * 100 + Number(UA_MATCH[3] || 0) : 0
 

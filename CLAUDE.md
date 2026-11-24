@@ -49,6 +49,44 @@ er lette at snuble over.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
   `?action=migrate` én gang efter første deploy for at oprette tabeller.
 
+## 2026-11-24 (eftermiddag): log over afspilningen — "hvad gik galt?"
+
+Telefonens egen log rakte kun en time tilbage, så det, der gik galt i bilen, var væk. Nu logger
+siden og Android-app'en (fra 3.2) selv, og loggen gemmes **et år** på aogj.com.
+
+- **Se loggen:** `python3 scraper/podcastlog.py` her på HTPC: de sidste 7 dage, en linje pr. dag
+  (sider, lyttetid, afsnit, fejl, udfald, genindlæsninger, opgivet, pop-ups) og under den lydens
+  fejl, hvad der blev hentet forfra og om det lykkedes, ventetid på data, hvor afspil kom fra,
+  Android-kommandoer pr. afsender og hvorfor processerne døde. `--tidslinje` viser hver hændelse
+  (dansk tid), `--kun-galt` kun fejl, udfald, genstarter o.l., `--fra "2026-11-24 09:30" --til
+  "2026-11-24 10:15"` en periode, `--type n:` kun app'ens egne, `--enhed claude-test` testenes.
+- **Serveren:** `api/logg.php`, tabellen `podcast_log` (`?action=migrate`). `log.add` (POST) er åben
+  som resten; hver hændelse har enhedens eget id, så et bundt sendt to gange gemmes én gang.
+  `log.list` kræver ingest-nøglen i headeren `X-Log-Key` (loggen viser, hvornår der lyttes). Ældre
+  end 365 dage ryddes af sig selv. `ts` er enhedens ur (ms), `received_at` serverens (UTC).
+- **Siden:** `web/src/lib/logg.ts`. En kø i localStorage (`podcast_logg`, højst 2000), der sendes i
+  bundter på 200 tyve sekunder efter en hændelse, straks på `online`/`dkpod:forgrund` og med
+  `sendBeacon` ved skjul/baggrund/lukning. Hændelser fra et hul i dækningen når altså frem bagefter
+  (`off=1`). Hver hændelse har `skjult`/`bg`/`off`-flag, og `net` (wifi, cellular, 4g …), når nettet
+  skifter. `window.__dkPodLogSend()` sender med det samme (testene).
+- **Typerne:** `start` (siden indlæst: build, app-version, `sw`, `sidenMin`), `genskabt`, `afsnit`,
+  `afspil`/`pause` med `kilde` (ui, ms = notifikation/låseskærm/bil, koe, tv), `spol`, `luk`,
+  `sove`, `fjern`, `synk`, `ny-udgave`, `lyt` (hvert 5. min. mens der spilles), lydens egne
+  `lyd:play`/`lyd:spiller` (med `ventetMs`)/`lyd:pause`/`lyd:venter`/`lyd:stalled`/
+  `lyd:metadata`/`lyd:slut`/`lyd:fejl` (kode, besked, host, `kurs`: proev-igen, paa-pause, kan-ikke),
+  `genindlaes` (`hvorfor`: doed, haenger, lang-pause, fejl, online, vagt), `opgivet`, og `online`,
+  `offline`, `synlig`, `skjult`, `forgrund`, `baggrund`, `lukket`. Lydens felter: `ep`, `pos`,
+  `rs` (readyState), `ns` (networkState), `err`, `buf` (sek. hentet foran).
+- **Android 3.2** (`podcast-android/.../Logg.kt`): `n:proces`, `n:aktivitet`, `n:service`,
+  `n:webview` (`efterNedbrud`), `n:renderer` (sidens proces døde), `n:swipe`, `n:forgrund`,
+  `n:kommando` (`cmd` og `pkg` = afsender: bluetooth = bilen, systemui = notifikationen/låseskærmen),
+  `n:tast` (medie-taster), `n:luk`, `n:nyt-afsnit` og `n:afslut` (Android 11+: hvorfor processerne
+  døde, som `dumpsys activity exit-info`, på det tidspunkt de døde). Siden henter dem med
+  `AndroidHost.loggHent()`, og app'en siger til med `dkpod:logg`.
+- **Test:** `test/test_genoptag.py` tjek 6 (33 tjek i alt): udfaldene står i loggen med grund, også
+  dem fra offline-tiden. `podcast-android/test/test_android.py logg` (24): app'ens hændelser når
+  serveren, også efter at sidens proces er dræbt.
+
 ## 2026-11-24: afspilleren kommer i gang igen, når lyden er faldet ud
 
 Allan i Teslaen: afspilningen stoppede, og afspil hjalp ikke (den stod stille), heller ikke når
