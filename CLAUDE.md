@@ -49,6 +49,35 @@ er lette at snuble over.
 - Deploy = FTP only (`.ftp-credentials`, delt med de andre aogj.com-projekter). Kør
   `?action=migrate` én gang efter første deploy for at oprette tabeller.
 
+## 2026-11-24: afspilleren kommer i gang igen, når lyden er faldet ud
+
+Allan i Teslaen: afspilningen stoppede, og afspil hjalp ikke (den stod stille), heller ikke når
+app'en var swipet væk og åbnet igen. Kun "Luk" (stop) i notifikationen og så afsnittet forfra.
+
+- **Årsagen:** et `<audio>`, der har fået en netværksfejl, kommer **aldrig** i gang igen med
+  `play()`. Fejlen kommer, når dækningen er væk i over ca. 30 sek. (så længe prøver Chromium selv),
+  eller når CDN-adressen er udløbet (libsyns `Expires` er ca. 2 timer; uden service worker henter
+  Chromium videre fra den omdirigerede adresse). Afprøvet i Chrome mod en testserver: `play()` og
+  pause + `play()` står stille, en ny indlæsning af kilden spiller med det samme. `resume()` kaldte
+  kun `play()`, og et tryk på afsnittet i køen er også `resume()`. Fejlen åbnede desuden pop-up'en
+  "kunne ikke afspilles", som skjuler ▶. Swipe væk hjalp ikke, fordi siden og afspilleren med vilje
+  overlever det (Android-app'en fra 3.0). En forbindelse kan også **hænge uden fejl** (set i
+  emulatorens flytilstand).
+- **Rettelsen (kun web, `App.tsx`):** `genindlaes()` henter lyden forfra fra afsnittets egen adresse
+  (og dermed omdirigeringen på ny) og fortsætter på samme sted. `resume()` gør det, når elementet
+  er i fejl (`lydDoed`), venter på data siden et `waiting` (`haenger`), eller har stået på pause i
+  over 30 min. med net. En fejl på et afsnit, der har spillet i denne omgang (`lydVirkede`), eller
+  uden net, er forbindelsen og ikke afsnittet: ingen pop-up, men nye forsøg efter 1, 2, 4, 8, 15, 30
+  og så hvert 45. sek., straks på `online`, i op til 10 min. Så står den på pause med en besked, så den
+  ikke begynder at spille længe efter, man er steget ud. **Vagten** henter forfra, når lyden har
+  ventet på data i over 15 sek., mens den skulle spille (i emulatoren hang også den første nye
+  hentning efter flytilstand; vagten fik den i gang). Har man selv trykket pause, prøver den ikke.
+  Et afsnit, der fejler ved første indlæsning (har aldrig spillet), giver stadig pop-up'en.
+- **Test:** `test/test_genoptag.py` (19 tjek, 6-8 min.): hul i dækningen, offline, pause + afspil,
+  et afsnit der aldrig har virket, og vagten, med Chrome DevTools-protokollen og service workeren
+  sprunget over. I Android-app'en: `podcast-android/test/test_android.py genoptag` med flytilstand i
+  emulatoren, og med service workeren (siden fra localhost gennem `adb reverse`).
+
 ## 2026-11-17 (eftermiddag): fanen Lyd, torrent → tv, udgivelsesdatoer
 
 - **Fanen Lyd** (`Lyd.tsx`, sjette fane): Allans genveje fra BOOK6 (`sonos-tray`) på telefonen.

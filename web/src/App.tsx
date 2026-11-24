@@ -128,6 +128,37 @@ const SLEEP_STEPS = [15, 30, 45, 60, 90]
 // Afsnittet fra sidste gang (eller fra før en genindlæsning), læst én gang ved opstart.
 const RESTORED = readNowPlaying()
 
+// ---------- når forbindelsen til lyden går tabt (rettet 2026-11-24) ----------
+// Et <audio>, der har mistet forbindelsen til lyden, kommer ALDRIG selv i gang igen. Efter en fejl
+// (ingen dækning i over ca. 30 sek., eller en CDN-adresse, der er udløbet under en lang pause;
+// libsyns holder ca. 2 timer) står det stille, uanset hvor mange gange man trykker afspil. Afprøvet
+// i Chrome 24/11: play() og pause + play() flyttede det ikke et sekund, en ny indlæsning af kilden
+// spillede med det samme. I bilen så det ud, som om app'en var gået i stå, og kun "Luk" i
+// notifikationen hjalp. Derfor hentes lyden forfra fra afsnittets egen adresse (så hentes
+// omdirigeringen til CDN'et også på ny), og der fortsættes, hvor den slap: se `genindlaes`.
+function lydDoed(el: HTMLAudioElement): boolean {
+  return !!el.error || el.networkState === HTMLMediaElement.NETWORK_NO_SOURCE
+}
+// Venter lyden stadig på data, siden den gik i stå (`waiting` uden `playing` bagefter;
+// `ventetFra` er tidspunktet)? Så kan forbindelsen hænge uden at give en fejl. I emulatoren skete
+// det i flytilstand (24/11): ingen fejl, og nettet kom tilbage uden at lyden gjorde det.
+function haenger(el: HTMLAudioElement, ventetFra: number): boolean {
+  return ventetFra > 0 && el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
+}
+// Faldt lyden ud, mens man lyttede: prøv igen efter 1, 2, 4, 8, 15 og 30 sek., derefter hvert 45.,
+// og med det samme, når nettet er tilbage. Tæt i starten: når dækningen kommer igen, kan nettet
+// være et stykke tid om at virke (i emulatoren op mod en halv minut efter flytilstand).
+const FORSOEG_MS = [1000, 2000, 4000, 8000, 15_000, 30_000, 45_000]
+// Så længe prøver app'en selv, regnet fra da lyden faldt ud. Derefter står afsnittet på pause, så
+// det ikke pludselig begynder at spille længe efter (man kan være steget ud af bilen).
+const OPGIV_MS = 10 * 60_000
+// Står lyden stille og venter på data så længe, mens den skulle spille, hentes den forfra. En
+// forbindelse, der hænger efter et hul i dækningen, giver ingen fejl. Den står bare, og i
+// emulatoren hang også den første nye hentning efter flytilstand (24/11).
+const STAAR_STILLE_MS = 15_000
+// Efter en så lang pause er forbindelsen lukket, og CDN-adressen kan være udløbet: hent forfra.
+const LANG_PAUSE_MS = 30 * 60_000
+
 function fmtDate(unix: number): string {
   if (!unix) return ''
   return new Date(unix * 1000).toLocaleDateString('da-DK', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -410,6 +441,14 @@ export default function App() {
   const lastSync = useRef(0)
   const wantPlay = useRef(false) // brugeren har bedt om lyd (en fejl før det er ikke værd at vise)
   const closing = useRef(false)
+  // Når forbindelsen til lyden går tabt (se lydDoed øverst i filen):
+  const lydVirkede = useRef(0) // afsnittet, hvis lyd har spillet (eller er indlæst) i denne omgang: så er en senere fejl forbindelsen, ikke afsnittet
+  const sidstePos = useRef(0) // sidste sted, lyden nåede (sek.)
+  const pauseFra = useRef(0) // Date.now(), da der sidst blev pauset (0 = ikke på pause)
+  const fejlFra = useRef(0) // Date.now(), da lyden faldt ud (0 = den er ikke faldet ud)
+  const ventetFra = useRef(0) // Date.now(), da lyden begyndte at vente på data (0 = den venter ikke). En forbindelse kan hænge uden fejl.
+  const forsoeg = useRef(0) // forsøg i træk, siden lyden faldt ud
+  const forsoegTimer = useRef(0)
 
   useEffect(() => {
     currentRef.current = current
@@ -614,6 +653,11 @@ export default function App() {
       if (save) savePositionNow()
       closing.current = true
       wantPlay.current = false
+      window.clearTimeout(forsoegTimer.current)
+      lydVirkede.current = 0
+      fejlFra.current = 0
+      ventetFra.current = 0
+      pauseFra.current = 0
       stopKeepAlive()
       if (el) {
         el.pause()
@@ -681,12 +725,57 @@ export default function App() {
     }
     const here = el.readyState > 0 ? el.currentTime : ep.positionSec || 0
     if (Math.abs(st.positionSec - here) < 5) return
-    if (el.readyState > 0) el.currentTime = st.positionSec
+    // Også før lyden er indlæst: så bliver det startpositionen (fx mens den hentes forfra).
+    el.currentTime = st.positionSec
     setCurTime(st.positionSec)
     setCurrent((c) => (c && c.episodeId === ep.episodeId ? { ...c, positionSec: st.positionSec } : c))
     saveNowPlaying({ ...ep, positionSec: st.positionSec }, st.positionSec, st.durationSec || ep.durationSec)
     showToast(`Fortsætter fra ${fmtClock(st.positionSec)}, hvor du slap på en anden enhed`)
   }, [deviceId, showToast])
+
+  // Hent lyden forfra fra afsnittets egen adresse, og fortsæt, hvor den slap. Bruges, når
+  // forbindelsen til lyden er tabt (se lydDoed øverst): det døde element kan ikke startes igen.
+  // Positionen sættes, før lyden er indlæst, og gælder så som startposition.
+  const genindlaes = useCallback((spil: boolean) => {
+    const el = audioRef.current
+    const ep = currentRef.current
+    if (!el || !ep?.audioUrl) return
+    window.clearTimeout(forsoegTimer.current)
+    const pos = el.currentTime > 0 ? el.currentTime : sidstePos.current || ep.positionSec || 0
+    ventetFra.current = 0
+    el.src = ep.audioUrl
+    el.currentTime = pos
+    el.defaultPlaybackRate = rateRef.current
+    el.playbackRate = rateRef.current
+    // Indtil lyden er indlæst, er afsnittets positionSec den, der gemmes (savePositionNow).
+    setCurrent((c) => (c && c.episodeId === ep.episodeId ? { ...c, positionSec: Math.floor(pos) } : c))
+    if (spil) el.play().catch(() => { /* onError tager sig af det */ })
+  }, [])
+
+  // Lyden faldt ud, mens man lyttede: prøv igen om lidt, eller straks (vagten, nettet er tilbage).
+  // Har den været væk i over OPGIV_MS, gives der op: afsnittet står på pause, og et tryk på afspil
+  // prøver forfra.
+  const proevIgen = useCallback(
+    (straks = false) => {
+      window.clearTimeout(forsoegTimer.current)
+      if (!wantPlay.current || !currentRef.current) return
+      if (fejlFra.current && Date.now() - fejlFra.current > OPGIV_MS) {
+        wantPlay.current = false
+        fejlFra.current = 0
+        audioRef.current?.pause()
+        setPlaying(false)
+        showToast('Lyden kunne ikke hentes. Tryk afspil for at prøve igen.')
+        return
+      }
+      if (!navigator.onLine) return // `online` prøver igen
+      const ms = straks ? 0 : FORSOEG_MS[Math.min(forsoeg.current, FORSOEG_MS.length - 1)]
+      forsoeg.current++
+      forsoegTimer.current = window.setTimeout(() => {
+        if (wantPlay.current && currentRef.current) genindlaes(true)
+      }, ms)
+    },
+    [genindlaes, showToast],
+  )
 
   // Genoptag: spil MED DET SAMME, og spørg så serveren, om der er lyttet videre et andet sted —
   // er der, spoles der dertil bagefter. Før ventede afspilningen på svaret, og i en side der har
@@ -697,10 +786,20 @@ export default function App() {
     const ep = currentRef.current
     if (!el || !ep?.audioUrl) return
     wantPlay.current = true
+    forsoeg.current = 0
+    fejlFra.current = 0
     const sync = navigator.onLine && Date.now() - lastSync.current > 60_000
     if (!el.getAttribute('src')) {
       el.src = ep.audioUrl
       el.currentTime = ep.positionSec || 0
+    } else if (
+      lydDoed(el) ||
+      haenger(el, ventetFra.current) ||
+      (navigator.onLine && pauseFra.current > 0 && Date.now() - pauseFra.current > LANG_PAUSE_MS)
+    ) {
+      // Forbindelsen til lyden er tabt eller hænger (så ville play() bare stå stille), eller der
+      // er pauset så længe, at forbindelsen er lukket, og CDN-adressen kan være udløbet: forfra.
+      genindlaes(false)
     }
     el.defaultPlaybackRate = rateRef.current
     el.playbackRate = rateRef.current
@@ -708,10 +807,10 @@ export default function App() {
       await el.play()
       setPlaying(true)
     } catch {
-      /* fx ingen dækning — onError viser pop-up'en */
+      /* fx ingen dækning — onError tager sig af det */
     }
     if (sync) syncFromServer(true)
-  }, [syncFromServer])
+  }, [syncFromServer, genindlaes])
 
   // Genskab afsnittet fra sidste gang: lyden indlæses (kun metadata), positionen sættes i
   // onLoadedMetadata, og der spilles ikke, før man trykker. I Android-app'en står det så også
@@ -955,6 +1054,9 @@ export default function App() {
       setOnline(true)
       flush()
       refreshAll(true)
+      // Faldt lyden ud (eller hænger den), mens der ikke var net, fortsætter den nu.
+      const el = audioRef.current
+      if (wantPlay.current && el && el.getAttribute('src') && (lydDoed(el) || haenger(el, ventetFra.current))) proevIgen(true)
     }
     const goOffline = () => setOnline(false)
     window.addEventListener('online', goOnline)
@@ -964,7 +1066,7 @@ export default function App() {
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
     }
-  }, [deviceId, canDownload, refreshDownloads, loadQueue, refreshAll])
+  }, [deviceId, canDownload, refreshDownloads, loadQueue, refreshAll, proevIgen])
 
   // Udforsk-listen hentes først når fanen åbnes (fra klik-handleren, ikke en effect — den koster
   // ~0,7 sek. hos Podcast Index, og startfanen er Kø, så på start kappedes den før om
@@ -1331,6 +1433,13 @@ export default function App() {
     // Skiftes der afsnit midt i et andet, gemmes det gamles plads først.
     if (currentRef.current && currentRef.current.episodeId !== ep.episodeId) savePositionNow()
     setPlayErrorId(0)
+    window.clearTimeout(forsoegTimer.current)
+    lydVirkede.current = 0
+    fejlFra.current = 0
+    ventetFra.current = 0
+    forsoeg.current = 0
+    pauseFra.current = 0
+    sidstePos.current = ep.positionSec || 0
     setCurrent(ep)
     currentRef.current = ep
     setPlaying(true)
@@ -1376,6 +1485,7 @@ export default function App() {
     const el = audioRef.current
     const ep = currentRef.current
     if (!el || !ep || !el.getAttribute('src')) return
+    if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && el.currentTime > 0) sidstePos.current = el.currentTime
     if (!seeking) setCurTime(el.currentTime)
     if (el.duration && isFinite(el.duration)) setDur(el.duration)
     const now = Date.now()
@@ -1397,7 +1507,7 @@ export default function App() {
   const togglePlay = useCallback(() => {
     const el = audioRef.current
     if (!el) return
-    if (el.paused) {
+    if (el.paused || lydDoed(el)) {
       resume()
     } else {
       wantPlay.current = false
@@ -1528,6 +1638,33 @@ export default function App() {
     const iv = window.setInterval(tick, 5000)
     return () => window.clearInterval(iv)
   }, [sleepUntil])
+
+  // Vagten: skal lyden spille, men står den stille og venter på data i over STAAR_STILLE_MS, hentes
+  // den forfra. En forbindelse, der hænger efter et hul i dækningen, giver ingen fejl, så den ville
+  // ellers kunne stå sådan i minutter.
+  useEffect(() => {
+    if (!playing) return
+    let sidst = -1
+    let siden = 0
+    const iv = window.setInterval(() => {
+      const el = audioRef.current
+      const venter =
+        !!el && !el.paused && !el.ended && wantPlay.current && navigator.onLine &&
+        el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA && el.currentTime === sidst
+      sidst = el ? el.currentTime : -1
+      if (!venter) {
+        siden = 0
+        return
+      }
+      if (!siden) siden = Date.now()
+      else if (Date.now() - siden >= STAAR_STILLE_MS) {
+        if (!fejlFra.current) fejlFra.current = siden
+        siden = 0
+        proevIgen(true)
+      }
+    }, 5000)
+    return () => window.clearInterval(iv)
+  }, [playing, proevIgen])
 
   // ---------- Afspil på …: tv'et i stuen eller en Google Home-højttaler ----------
   // En podcast spilles fra hvor man er nu, og app'en følger med (TvSession). Den lokale afspiller
@@ -2576,8 +2713,20 @@ export default function App() {
         }}
         onPlay={() => {
           setPlaying(true)
+          pauseFra.current = 0
           stopKeepAlive() // der spiller rigtig lyd nu — stilheden har gjort sit
           syncPositionState()
+        }}
+        onPlaying={() => {
+          // Lyden spiller (igen): falder den ud senere, er det forbindelsen, ikke afsnittet.
+          lydVirkede.current = currentRef.current?.episodeId || 0
+          window.clearTimeout(forsoegTimer.current)
+          forsoeg.current = 0
+          fejlFra.current = 0
+          ventetFra.current = 0
+        }}
+        onWaiting={() => {
+          if (!ventetFra.current) ventetFra.current = Date.now()
         }}
         onPause={() => {
           setPlaying(false)
@@ -2585,16 +2734,29 @@ export default function App() {
           // Slutningen af et afsnit er også en "pause" — der er intet at holde i live der.
           // Det samme gælder, når afspilleren lukkes (src fjernes).
           if (el && currentRef.current && !el.ended && !closing.current && el.getAttribute('src')) {
+            pauseFra.current = Date.now()
             savePositionNow() // siden kan blive kasseret; gem positionen med det samme
             startKeepAlive() // hold afspilleren i notifikationsskuffen i 10 min. (ikke i Android-app'en)
           }
           syncPositionState()
         }}
         onError={() => {
+          const el = audioRef.current
+          const ep = currentRef.current
+          if (!el || !ep?.audioUrl || closing.current || !el.getAttribute('src')) return
+          // Har afsnittet spillet i denne omgang, eller er der intet net, er det forbindelsen, der er
+          // gået tabt (dårlig dækning i bilen, en udløbet CDN-adresse), ikke afsnittet, der ikke kan
+          // afspilles. Så hentes lyden forfra, når der er net igen (se lydDoed øverst i filen).
+          if (lydVirkede.current === ep.episodeId || !navigator.onLine) {
+            if (!el.paused) el.pause() // ellers viser bilen og låseskærmen "spiller", mens den står stille
+            if (!wantPlay.current) return // på pause: et tryk på afspil henter den forfra (resume)
+            if (!fejlFra.current) fejlFra.current = Date.now()
+            proevIgen()
+            return
+          }
           // lyd kunne ikke afspilles (fx DR app-only/geo) → vis link-out-pop-up. Kun hvis man
           // faktisk har bedt om lyd: et genskabt afsnit uden dækning skal ikke larme ved opstart.
-          const ep = currentRef.current
-          if (ep && ep.audioUrl && wantPlay.current && audioRef.current?.getAttribute('src')) {
+          if (wantPlay.current) {
             setPlayErrorId(ep.episodeId)
             setPlaying(false)
             setOpenEpisode(ep)
@@ -2603,6 +2765,7 @@ export default function App() {
         onLoadedMetadata={() => {
           const el = audioRef.current
           const ep = currentRef.current
+          if (ep) lydVirkede.current = ep.episodeId
           if (el && ep && ep.positionSec && el.currentTime < 1) el.currentTime = ep.positionSec
           if (el && el.duration && isFinite(el.duration)) setDur(el.duration)
           syncPositionState()

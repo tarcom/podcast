@@ -189,6 +189,9 @@ try:
     # søg og åbn en mappe (kun navigation)
     mappe = [b for b in d.find_elements(By.CSS_SELECTOR, '.stuen-liste li button') if b.find_elements(By.CSS_SELECTOR, '.pil')]
     if mappe:
+        # Midt på skærmen: ellers kan den første mappe ligge bag bundmenuen (sket 24/11)
+        js("arguments[0].scrollIntoView({block: 'center'})", mappe[0])
+        time.sleep(0.3)
         mappe[0].click()
         ok(wait(lambda: d.find_element(By.CSS_SELECTOR, '.stuen-op')), 'en mappe kan åbnes, og der er en Tilbage-knap')
         ok(js("return window.__dkPodTilbage()") is True, "Androids tilbage-knap går en mappe op")
